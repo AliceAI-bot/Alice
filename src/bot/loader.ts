@@ -1,6 +1,7 @@
 import { Events, REST, Routes, Guild } from 'discord.js';
 import { readdir } from 'node:fs/promises';
 import { join, extname } from 'node:path';
+import { pathToFileURL } from 'node:url';          // ← ADD THIS
 import { CustomClient } from './client.js';
 import type { Event, Command } from '../types/index.js';
 
@@ -23,7 +24,7 @@ export async function loadEvents(client: CustomClient): Promise<void> {
 
     for (const file of files) {
         try {
-            const mod = await import(file);
+            const mod = await import(pathToFileURL(file).href);   // ← FIX HERE
             const event: Event = mod.default ?? mod;
 
             if (!event?.name || typeof event.execute !== 'function') {
@@ -56,7 +57,7 @@ export async function loadCommands(client: CustomClient): Promise<Command[]> {
 
     for (const file of files) {
         try {
-            const mod = await import(file);
+            const mod = await import(pathToFileURL(file).href);   // ← FIX HERE
             const cmd: Command = mod.default ?? mod;
 
             if (!cmd?.data?.name || typeof cmd.execute !== 'function') {
@@ -79,32 +80,24 @@ export async function loadCommands(client: CustomClient): Promise<Command[]> {
 
 export async function deployCommands(client: CustomClient, commands: Command[]): Promise<void> {
     const clusterId = client.cluster?.id ?? 0;
-
     if (clusterId !== 0) {
         console.log(`[deploy] Cluster ${clusterId} skipping deployment`);
         return;
     }
-
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN!);
-
     const globalCmds = commands.filter(c => c.global).map(c => c.data.toJSON());
     const guildCmds = commands.filter(c => !c.global).map(c => c.data.toJSON());
     const allCmds = [...globalCmds, ...guildCmds];
-
     if (allCmds.length === 0) {
         console.log('[deploy] No commands to register');
         return;
     }
-
     console.log('Refreshing guild cache...');
     await client.guilds.fetch();
-
     await registerGuildCommands(client, rest, allCmds);
-
     client.on(Events.GuildCreate, async (guild) => {
         await handleNewGuild(guild, client, rest, allCmds);
     });
-
     console.log('Command registration system ready');
 }
 
@@ -115,13 +108,10 @@ async function registerGuildCommands(
     guildCmds: unknown[]
 ): Promise<void> {
     if (guildCmds.length === 0) return;
-
     const guilds = client.guilds.cache;
     console.log(`[deploy] Registering commands for ${guilds.size} guilds...`);
-
     for (const [guildId, guild] of guilds) {
         if (registeredGuilds.has(guildId)) continue;
-
         try {
             await rest.put(
                 Routes.applicationGuildCommands(client.user!.id, guildId),
@@ -137,7 +127,6 @@ async function registerGuildCommands(
         }
     }
 }
-
 
 async function handleNewGuild(
     guild: Guild,
@@ -161,7 +150,6 @@ async function handleNewGuild(
 async function getFiles(dir: string): Promise<string[]> {
     const entries = await readdir(dir, { withFileTypes: true });
     const files: string[] = [];
-
     for (const entry of entries) {
         const fullPath = join(dir, entry.name);
         if (entry.isDirectory()) {
@@ -169,7 +157,6 @@ async function getFiles(dir: string): Promise<string[]> {
         } else if (EXT.includes(extname(entry.name))) {
             files.push(fullPath);
         }
-    }
-
+    }   
     return files;
 }
