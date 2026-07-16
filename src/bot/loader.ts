@@ -79,11 +79,6 @@ export async function loadCommands(client: CustomClient): Promise<Command[]> {
 
 
 export async function deployCommands(client: CustomClient, commands: Command[]): Promise<void> {
-    const clusterId = client.cluster?.id ?? 0;
-    if (clusterId !== 0) {
-        console.log(`[deploy] Cluster ${clusterId} skipping deployment`);
-        return;
-    }
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN!);
     const globalCmds = commands.filter(c => c.global).map(c => c.data.toJSON());
     const guildCmds = commands.filter(c => !c.global).map(c => c.data.toJSON());
