@@ -3,6 +3,7 @@ import { createClient, loginClient, CustomClient } from './client.js';
 import { loadEnv } from '../config/env.js';
 import { initTopGG } from '../integrations/TopGG.js';
 import { ready } from './loader.js';
+import { initDB } from '../db/database.js';
 
 const token = loadEnv('token');
 if (!token) {
@@ -14,14 +15,16 @@ const topGGToken = loadEnv('DBL_Token');
 let clientInstance: CustomClient | undefined;
 
 export async function runner() {
+    await initDB();
     try {
         clientInstance = await createClient();
         clientInstance.cluster = new ClusterClient(clientInstance);
         await loginClient(clientInstance, token!);
-
+          
         if (topGGToken) {
             initTopGG(topGGToken);
         }
+
         clientInstance.once('clientReady', async (readyClient) => {
             console.log(`Shard ${clientInstance!.cluster!.info.SHARD_LIST.join(',')} ready as ${readyClient.user.tag}`);
             clientInstance!.cluster!.triggerReady();

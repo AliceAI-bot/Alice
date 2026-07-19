@@ -1,4 +1,3 @@
-// src/integrations/TopGG.ts
 import { Api } from "@top-gg/sdk";
 
 let apiInstance: Api | null = null;

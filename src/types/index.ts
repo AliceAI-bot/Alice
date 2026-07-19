@@ -1,2 +1,2 @@
-export * from './cmd.js';
+export * from './commands.js';
 export * from './events.js';
