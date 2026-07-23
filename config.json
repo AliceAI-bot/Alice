@@ -11,5 +11,11 @@
     "blacklist": "1400520845759086712",
     "premium": "1400529439187538000"
   },
-  "devGuild": "1478339859805634661"
+  "devGuild": "1478339859805634661",
+  "badges": {
+    "bug hunter": "<:bugHunter:1400780610741600318> bug hunter",
+    "premium user": "<:prem:1400780420597157940> premium user",
+    "developer": "<:dev:1400780190636052483> developer",
+    "staff": "<:mod:1400779892425101343> staff"
+  }
 }

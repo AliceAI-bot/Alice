@@ -8,7 +8,8 @@ interface Config {
         blacklist: string;
         premium: string;
     };
-    devGuild: string;
+  devGuild: string;
+  badges: Record<string, string>;
 }
 
 let config: Config;
@@ -52,4 +53,12 @@ export function getLogChannel(type: 'blacklist' | 'premium'): string {
 export function getDevGuild(): string {
     const cfg = getConfig();
     return cfg.devGuild;
+}
+
+export function getBadge(name: string): string | undefined {
+    return getConfig().badges[name];
+}
+
+export function getAllBadges(): Record<string, string> {
+    return getConfig().badges;
 }

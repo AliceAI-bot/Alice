@@ -1,6 +1,5 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction } from 'discord.js';
 import type { Command } from '../types/index.js';
-import { isBlacklisted } from '../utils/blacklistUtil.js'
 
 export default {
     data: new SlashCommandBuilder()
@@ -9,14 +8,6 @@ export default {
     global: true,
     cooldown: 5,
     execute: async (interaction: ChatInputCommandInteraction) => {
-      const blacklistResponse = await isBlacklisted(interaction.user.id, interaction.client);
-      if (blacklistResponse) {
-          await interaction.reply({
-              ...blacklistResponse,
-              flags: 64,
-          });
-          return;
-      }
       const start = Date.now();
         await interaction.reply({
             content: '✨ *Alice stirs awake...*',

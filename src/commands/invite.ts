@@ -1,6 +1,5 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction, ButtonStyle, ButtonBuilder, ActionRowBuilder, EmbedBuilder } from 'discord.js';
 import type { Command } from '../types/index.js';
-import { isBlacklisted } from '../utils/blacklistUtil.js'
 
 export default {
     data: new SlashCommandBuilder()
@@ -11,14 +10,6 @@ export default {
     cooldown: 5,
     // just gave up halfway and used AI to complete the code cuz everything was similar lol
     execute: async (interaction: ChatInputCommandInteraction) => {
-      const blacklistResponse = await isBlacklisted(interaction.user.id, interaction.client);
-      if (blacklistResponse) {
-          await interaction.reply({
-              ...blacklistResponse,
-              flags: 64,
-          });
-          return;
-      }
         await interaction.deferReply();
 
         const embed = new EmbedBuilder()

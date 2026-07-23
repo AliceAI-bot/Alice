@@ -9,7 +9,6 @@ import {
 } from 'discord.js';
 import { cpus, totalmem, freemem } from 'os';
 import type { Command } from '../types/index.js';
-import { isBlacklisted } from '../utils/blacklistUtil.js'
 
 const createButtonRow = () => {
     return new ActionRowBuilder<ButtonBuilder>()
@@ -41,14 +40,6 @@ export default {
     cooldown: 5,
 
     execute: async (interaction) => {
-      const blacklistResponse = await isBlacklisted(interaction.user.id, interaction.client);
-      if (blacklistResponse) {
-          await interaction.reply({
-              ...blacklistResponse,
-              flags: 64,
-          });
-          return;
-      }
         await interaction.deferReply();
 
         const embed = new EmbedBuilder()
@@ -123,6 +114,7 @@ export default {
                                         '`/ping` • Check bot latency',
                                         '`/invite` • Invite Alice to your server',
                                         '`/help` • Show this help menu',
+                                        '`/profile` • View your or another user\'s profile',
                                     ].join('\n'),
                                     inline: false,
                                 }

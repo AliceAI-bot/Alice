@@ -5,7 +5,7 @@ import {
     ButtonStyle,
     Client,
 } from 'discord.js';
-import { Blacklist } from '../db/database.js';
+import { Users } from '../db/database.js';
 
 interface BlacklistResponse {
     embeds: EmbedBuilder[];
@@ -13,8 +13,8 @@ interface BlacklistResponse {
 }
 
 export async function isBlacklisted(userId: string, client?: Client): Promise<BlacklistResponse | null> {
-    if (await Blacklist.isBlacklisted(userId)) {
-        const reason = await Blacklist.getReason(userId) || 'Multiple policy violations';
+    if (await Users.isBlacklisted(userId)) {
+        const reason = await Users.getBlacklistReason(userId) || 'Multiple policy violations';
 
         const footerData: any = {
             text: 'Alice • Appeal if you believe this is an error',
