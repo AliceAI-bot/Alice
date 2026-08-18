@@ -3,17 +3,16 @@ import { loadEnv } from '../config/env.js';
 
 interface Collections {
     users: Collection;
-    channels: Collection;
-    characters: Collection;
+    guilds: Collection;
 }
 
 class CouchbaseClient {
     private static cluster: Cluster | null = null;
     private static collections: Collections | null = null;
-    private static readonly COLLECTIONS: (keyof Collections)[] = ['users', 'channels', 'characters'];
+    private static readonly COLLECTIONS: (keyof Collections)[] = ['users', 'guilds'];
 
     static async init(): Promise<Collections> {
-        if (this.collections) return this.collections;
+        if (this.collections) return this.collections!;
 
         this.cluster = await connect(loadEnv('couchbase'), {
             username: loadEnv('couchbase_user'),
@@ -30,11 +29,10 @@ class CouchbaseClient {
 
         this.collections = {
             users: scope.collection('users'),
-            channels: scope.collection('channels'),
-            characters: scope.collection('characters'),
+            guilds: scope.collection('guilds'),
         };
 
-        return this.collections;
+        return this.collections!;
     }
 
     private static async ensureCollections(bucket: any): Promise<void> {

@@ -1,14 +1,21 @@
 import { Message } from 'discord.js';
-import { Channels } from '../db/database.js';
+import { Guilds } from '../db/database.js';
+import { decrypt } from '../integrations/crypto.js';
 
 export async function shouldReply(message: Message): Promise<boolean> {
-    // DMs always allowed
     if (!message.guild) return true;
-
-    // Bot mentioned? Always allow
     if (message.mentions.users.has(message.client.user!.id)) return true;
 
-    // Check if channel has AI enabled
-    const channel = await Channels.get(message.channelId);
-    return channel !== null;
+    const guild = await Guilds.get(message.guild!.id);
+    if (!guild) return false;
+
+    for (const config of Object.values(guild.channels)) {
+        try {
+            const channelId = decrypt(config.channelId);
+            if (channelId === message.channelId) return true;
+        } catch {
+            // skip corrupted
+        }
+    }
+    return false;
 }

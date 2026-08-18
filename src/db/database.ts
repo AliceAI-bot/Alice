@@ -23,19 +23,13 @@ export interface UserData {
     blacklistReason: string | null;
 }
 
-export interface ChannelData {
-    isCustom: boolean;
-    personaId: string | null;
-    customCharId: string | null;
-    createdBy: string;
-    createdAt: number;
+export interface ChannelConfig {
+    persona: string;
+    channelId: string;
 }
 
-export interface CharacterData {
-    name: string;
-    description: string;
-    systemPrompt: string;
-    creatorId: string;
+export interface GuildData {
+    channels: Record<string, ChannelConfig>;
     createdAt: number;
 }
 
@@ -156,70 +150,83 @@ class UsersModel {
     }
 }
 
-class ChannelsModel {
+class GuildsModel {
     constructor(private collection: Collection) {}
 
-    async get(channelId: string): Promise<ChannelData | null> {
+    async get(guildId: string): Promise<GuildData | null> {
         try {
-            const doc = await this.collection.get(hashKey(channelId));
-            return doc.content as ChannelData;
+            const doc = await this.collection.get(hashKey(guildId));
+            return doc.content as GuildData;
         } catch (err) {
             if (err instanceof DocumentNotFoundError) return null;
             throw err;
         }
     }
 
-    async set(channelId: string, data: ChannelData): Promise<void> {
-        await this.collection.upsert(hashKey(channelId), data);
+    async set(guildId: string, data: GuildData): Promise<void> {
+        await this.collection.upsert(hashKey(guildId), data);
     }
 
-    async remove(channelId: string): Promise<void> {
-        await this.collection.remove(hashKey(channelId));
+    async remove(guildId: string): Promise<void> {
+        await this.collection.remove(hashKey(guildId));
     }
-}
 
-class CharactersModel {
-    constructor(private collection: Collection) {}
+    async setChannel(guildId: string, channelId: string, persona: string): Promise<void> {
+        const guild = await this.get(guildId);
+        const channels = guild?.channels ?? {};
+        const hashed = hashKey(channelId);
+        channels[hashed] = { persona: encrypt(persona), channelId: encrypt(channelId) };
+        await this.set(guildId, { channels, createdAt: guild?.createdAt ?? Date.now() });
+    }
 
-    async get(charId: string): Promise<CharacterData | null> {
-        try {
-            const doc = await this.collection.get(charId);
-            const data = doc.content as any;
-            return {
-                ...data,
-                systemPrompt: decrypt(data.systemPrompt),
-            };
-        } catch (err) {
-            if (err instanceof DocumentNotFoundError) return null;
-            throw err;
+    async removeChannel(guildId: string, channelId: string): Promise<void> {
+        const guild = await this.get(guildId);
+        if (!guild) return;
+        const hashed = hashKey(channelId);
+        delete guild.channels[hashed];
+        await this.set(guildId, guild);
+    }
+
+    async getChannel(guildId: string, channelId: string): Promise<string | null> {
+        const guild = await this.get(guildId);
+        if (!guild) return null;
+        const hashed = hashKey(channelId);
+        const config = guild.channels[hashed];
+        if (!config) return null;
+        return decrypt(config.persona);
+    }
+
+    async getAllChannels(guildId: string): Promise<Record<string, string>> {
+        const guild = await this.get(guildId);
+        if (!guild) return {};
+        const decrypted: Record<string, string> = {};
+        for (const [, config] of Object.entries(guild.channels)) {
+            try {
+                const channelId = decrypt(config.channelId);
+                const persona = decrypt(config.persona);
+                decrypted[channelId] = persona;
+            } catch {
+                // skip corrupted entries
+            }
         }
+        return decrypted;
     }
 
-    async create(charId: string, data: Omit<CharacterData, 'createdAt'>): Promise<void> {
-        await this.collection.insert(charId, {
-            ...data,
-            systemPrompt: encrypt(data.systemPrompt),
-            createdAt: Date.now(),
-        });
-    }
-
-    async delete(charId: string): Promise<void> {
-        await this.collection.remove(charId);
+    async clearGuild(guildId: string): Promise<void> {
+        await this.remove(guildId);
     }
 }
 
 let Users: UsersModel;
-let Channels: ChannelsModel;
-let Characters: CharactersModel;
+let Guilds: GuildsModel;
 
 async function initDB(): Promise<void> {
     const collections = await CouchbaseClient.init();
 
     Users = new UsersModel(collections.users);
-    Channels = new ChannelsModel(collections.channels);
-    Characters = new CharactersModel(collections.characters);
+    Guilds = new GuildsModel(collections.guilds);
 
     console.log('[db] ✅ Models ready');
 }
 
-export { initDB, Users, Channels, Characters };
+export { initDB, Users, Guilds };
