@@ -1,4 +1,4 @@
-import { Events, Interaction, ChatInputCommandInteraction, ButtonInteraction } from 'discord.js'; import { CustomClient } from '../bot/client.js'; import { ensureTos, createTosEmbed, handleTosButton } from '../utils/tos.js'; import { isBlacklisted } from '../utils/blacklistUtil.js'; import type { Event, Command } from '../types/index.js';
+import { Events, Interaction, ChatInputCommandInteraction, ButtonInteraction } from 'discord.js'; import { CustomClient } from '../bot/client.js'; import { ensureTos, createTosEmbed, handleTosButton } from '../utils/tos.js'; import { isBlacklisted } from '../utils/blacklistUtil.js'; import { handleByokButton, handleByokModal } from '../commands/byok.js'; import type { Event, Command } from '../types/index.js';
 // ik ik the above line is very sigma lol
 // 
 export default {
@@ -7,6 +7,17 @@ export default {
         if (interaction.isButton()) {
             if (interaction.customId === 'accept_tos' || interaction.customId === 'cancel_tos') {
                 await handleTosButton(interaction as ButtonInteraction);
+                return;
+            }
+            if (interaction.customId.startsWith('byok_add') || interaction.customId.startsWith('byok_remove')) {
+                await handleByokButton(interaction as ButtonInteraction);
+                return;
+            }
+            return;
+        }
+        if (interaction.isModalSubmit()) {
+            if (interaction.customId === 'byok_modal') {
+                await handleByokModal(interaction);
                 return;
             }
             return;
