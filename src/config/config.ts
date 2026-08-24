@@ -10,23 +10,17 @@ interface Config {
     };
   devGuild: string;
   badges: Record<string, string>;
+  emojis: { name: string; emoji: string }[];
 }
 
 let config: Config;
-let initialized = false;
 
 function loadConfig(): Config {
-    if (initialized && config) return config;
+    if (config) return config;
 
-    try {
-        const configPath = path.join(process.cwd(), 'config.json');
-        const data = fs.readFileSync(configPath, 'utf-8');
-        config = JSON.parse(data);
-        initialized = true;
-        return config;
-    } catch (error) {
-        throw error;
-    }
+    const configPath = path.join(process.cwd(), 'config.json');
+    config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    return config;
 }
 
 export function getConfig(): Config {
@@ -59,6 +53,6 @@ export function getBadge(name: string): string | undefined {
     return getConfig().badges[name];
 }
 
-export function getAllBadges(): Record<string, string> {
-    return getConfig().badges;
+export function getEmojis(): { name: string; emoji: string }[] {
+    return getConfig().emojis;
 }

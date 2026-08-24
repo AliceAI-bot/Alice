@@ -16,8 +16,3 @@ export interface Command {
     permissions?: PermissionResolvable[];
     autocomplete?: (interaction: AutocompleteInteraction) => Promise<void>;
 }
-
-export interface LoadedCommand extends Command {
-    filePath: string;
-    category: string;
-}

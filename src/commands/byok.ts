@@ -1,4 +1,3 @@
-import path from 'node:path';
 import {
     SlashCommandBuilder,
     ChatInputCommandInteraction,
@@ -11,10 +10,9 @@ import {
     ModalSubmitInteraction,
     TextInputBuilder,
     TextInputStyle,
-    AttachmentBuilder,
 } from 'discord.js';
 import { Users } from '../db/database.js';
-import { keycheck } from '../integrations/openrouter.js';
+import { keycheck } from '../integrations/google.js';
 import type { Command } from '../types/index.js';
 
 const COLORS = {
@@ -24,19 +22,15 @@ const COLORS = {
     warning: 0xFFAA00,
 };
 
-const KEY_GUIDE_IMAGE = path.join(process.cwd(), 'src', 'assets', 'Create-Openrouter-API-Key-1-298025309.jpg');
-const KEY_GUIDE_ATTACHMENT = 'create-openrouter-key.jpg';
-
 const INFO_DESCRIPTION = [
     '# Bring Your Own Key',
-    '> Use your own OpenRouter API key with Alice instead of',
+    '> Use your own Google Gemini API key with Alice instead of',
     '> the shared queue. more uptime for everyone.',
     '',
     '# How to get a key',
-    '1. Go to https://openrouter.ai/keys',
-    '2. Sign up / log in (free, no card required)',
-    '3. Click "Create Key" and copy it',
-    '> Check the image above for a visual guide.',
+    '1. Go to https://aistudio.google.com/apikey',
+    '2. Sign in with your Google account',
+    '3. Click "Create API key" and copy it',
     '',
     '# Security',
     '> Your key is AES-256 encrypted before storage and is',
@@ -61,14 +55,13 @@ async function buildByokPayload(interaction: ChatInputCommandInteraction | Butto
 
     const title = opts.removed ? '🗑️ Key Removed' : '🔑 Bring Your Own Key';
     const description = opts.removed
-        ? '```md\n# Your OpenRouter key has been removed.\n> The embed above has been reset.\n> Hit Add Your Key to connect a new one anytime.\n```'
+        ? '```md\n# Your Gemini API key has been removed.\n> The embed above has been reset.\n> Hit Add Your Key to connect a new one anytime.\n```'
         : '```md\n' + INFO_DESCRIPTION + '\n```';
 
     const embed = new EmbedBuilder()
         .setTitle(title)
         .setDescription(description)
         .setColor(opts.removed ? COLORS.success : COLORS.primary)
-        .setImage('attachment://' + KEY_GUIDE_ATTACHMENT)
         .setFooter({
             text: `Requested by ${interaction.user.tag}`,
             iconURL: interaction.user.displayAvatarURL(),
@@ -83,7 +76,6 @@ async function buildByokPayload(interaction: ChatInputCommandInteraction | Butto
 
     return {
         embeds: [embed],
-        files: [new AttachmentBuilder(KEY_GUIDE_IMAGE, { name: KEY_GUIDE_ATTACHMENT })],
         components: [row],
     };
 }
@@ -91,7 +83,7 @@ async function buildByokPayload(interaction: ChatInputCommandInteraction | Butto
 export default {
     data: new SlashCommandBuilder()
         .setName('byok')
-        .setDescription('Bring Your Own Key — connect your OpenRouter API key to Alice'),
+        .setDescription('Bring Your Own Key — connect your Google Gemini API key to Alice'),
 
     global: true,
     cooldown: 5,
@@ -117,15 +109,15 @@ export async function handleByokButton(interaction: ButtonInteraction): Promise<
     if (interaction.customId.startsWith('byok_add')) {
         const modal = new ModalBuilder()
             .setCustomId('byok_modal')
-            .setTitle('🔑 Add Your OpenRouter Key')
+            .setTitle('🔑 Add Your Gemini Key')
             .addComponents(
                 new ActionRowBuilder<TextInputBuilder>().addComponents(
                     new TextInputBuilder()
                         .setCustomId('byok_key')
-                        .setLabel('OpenRouter API Key')
+                        .setLabel('Google AI Studio API Key')
                         .setStyle(TextInputStyle.Short)
                         .setRequired(true)
-                        .setPlaceholder('sk-or-v1-...')
+                        .setPlaceholder('AIza...')
                 )
             );
 

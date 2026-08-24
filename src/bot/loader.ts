@@ -1,5 +1,6 @@
 import { Events, REST, Routes, Guild } from 'discord.js';
-import { readdir } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join, extname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { CustomClient } from './client.js';
@@ -65,46 +66,93 @@ export async function deployCommands(client: CustomClient, commands: Command[]):
     const globalCmds = commands.filter(c => c.global).map(c => c.data.toJSON());
     const devCmds = commands.filter(c => !c.global).map(c => c.data.toJSON());
 
-    if (globalCmds.length) {
-        await rest.put(Routes.applicationCommands(client.user!.id), { body: globalCmds });
-        console.log(`[deploy] 🌍 ${globalCmds.length} global command(s) — propagating to all servers`);
+    if (client.cluster?.id === 0) {
+        const fingerprint = createHash('sha256')
+            .update(JSON.stringify([globalCmds, devCmds]))
+            .digest('hex');
+        if ((await readCache('commands.hash')) === fingerprint) {
+            console.log('[deploy] ✅ Commands unchanged — skipping Discord re-registration');
+        } else {
+            if (globalCmds.length) {
+                await rest.put(Routes.applicationCommands(client.user!.id), { body: globalCmds });
+                console.log(`[deploy] 🌍 ${globalCmds.length} global command(s) — propagating to all servers`);
+            }
+
+            if (DEV_GUILD && devCmds.length) {
+                await rest.put(
+                    Routes.applicationGuildCommands(client.user!.id, DEV_GUILD),
+                    { body: devCmds }
+                );
+                console.log(`[deploy] ⚡ Dev guild ${DEV_GUILD}: ${devCmds.length} command(s) synced instantly`);
+            }
+
+            await writeCache('commands.hash', fingerprint);
+        }
     }
-
-    if (DEV_GUILD) {
-        const allForDev = [...globalCmds, ...devCmds];
-        await rest.put(
-            Routes.applicationGuildCommands(client.user!.id, DEV_GUILD),
-            { body: allForDev }
-        );
-        console.log(`[deploy] ⚡ Dev guild ${DEV_GUILD}: ${allForDev.length} command(s) synced instantly`);
-    }
-
-    const knownGuilds = new Set(client.guilds.cache.keys());
-
-    client.on(Events.GuildDelete, (guild) => knownGuilds.delete(guild.id));
 
     client.on(Events.GuildCreate, async (guild: Guild) => {
-        if (knownGuilds.has(guild.id)) return;
-
-        const body = [...globalCmds];
-        if (guild.id === DEV_GUILD) body.push(...devCmds);
+        if (guild.id !== DEV_GUILD || !devCmds.length) return;
 
         try {
             await rest.put(
                 Routes.applicationGuildCommands(client.user!.id, guild.id),
-                { body }
+                { body: devCmds }
             );
-            knownGuilds.add(guild.id);
+            console.log(`[deploy] ⚡ Dev guild ${guild.name}: ${devCmds.length} command(s) synced instantly`);
         } catch (error: any) {
-            if (error.code === 50001) {
-                console.warn(`[deploy] ⚠️ ${guild.name} — no slash perms, skipped`);
-            } else {
-                console.error(`[deploy] ❌ ${guild.name}:`, error.message);
-            }
+            console.error(`[deploy] ❌ ${guild.name}:`, error.message);
         }
     });
 
+    await purgeStaleGuildCommands(client, rest, devCmds);
+
     console.log('[deploy] ✅ Ready — global propagation in progress, dev guild live');
+}
+
+const CACHE_DIR = join(ROOT, '.deploy-cache');
+
+async function readCache(name: string): Promise<string | null> {
+    try {
+        return await readFile(join(CACHE_DIR, name), 'utf-8');
+    } catch {
+        return null;
+    }
+}
+
+async function writeCache(name: string, data: string): Promise<void> {
+    try {
+        await mkdir(CACHE_DIR, { recursive: true });
+        await writeFile(join(CACHE_DIR, name), data);
+    } catch (error) {
+        console.error(`[deploy] ⚠️ cache write failed (${name}):`, error);
+    }
+}
+
+async function purgeStaleGuildCommands(client: CustomClient, rest: REST, devCmds: object[]): Promise<void> {
+    const marker = `purged-c${client.cluster?.id ?? 0}`;
+    if (await readCache(marker)) return;
+
+    const pending = [...client.guilds.cache.values()];
+    if (!pending.length) return;
+    let done = 0;
+    let cursor = 0;
+
+    await Promise.all(Array.from({ length: Math.min(5, pending.length) }, async () => {
+        while (cursor < pending.length) {
+            const guild = pending[cursor++]!;
+            const body = guild.id === DEV_GUILD ? devCmds : [];
+            try {
+                await rest.put(Routes.applicationGuildCommands(client.user!.id, guild.id), { body });
+                done++;
+            } catch (error: any) {
+                if (error?.code === 50001) console.warn(`[deploy] ⚠️ ${guild.name} — no slash perms, skipped`);
+                else console.error(`[deploy] ❌ purge ${guild.name}:`, error.message);
+            }
+        }
+    }));
+
+    await writeCache(marker, '1');
+    console.log(`[deploy] 🧹 Stale guild commands purged from ${done}/${pending.length} guild(s)`);
 }
 
 async function getFiles(dir: string): Promise<string[]> {

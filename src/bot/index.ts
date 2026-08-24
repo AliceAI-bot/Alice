@@ -15,12 +15,13 @@ const topGGToken = loadEnv('DBL_Token');
 let clientInstance: CustomClient | undefined;
 
 export async function runner() {
-    await initDB();
+    const dbReady = initDB();
+    dbReady.catch(() => {});
+
     try {
         clientInstance = await createClient();
         clientInstance.cluster = new ClusterClient(clientInstance);
-        await loginClient(clientInstance, token!);
-          
+
         if (topGGToken) {
             initTopGG(topGGToken);
         }
@@ -29,6 +30,7 @@ export async function runner() {
             console.log(`Shard ${clientInstance!.cluster!.info.SHARD_LIST.join(',')} ready as ${readyClient.user.tag}`);
             clientInstance!.cluster!.triggerReady();
             try {
+                await dbReady;
                 await ready(clientInstance!);
                 console.log('Alice is fully operational');
             } catch (error) {
@@ -36,6 +38,8 @@ export async function runner() {
                 process.exit(1);
             }
         });
+
+        await loginClient(clientInstance, token!);
 
         clientInstance.cluster.on('message', async (msg: any) => {
             if (msg._type === messageType.CUSTOM_REQUEST && msg.alive) {

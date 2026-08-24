@@ -11,7 +11,3 @@ export async function getAvailablePersonas(): Promise<string[]> {
     personaCache = files.map(f => f.replace('.txt', ''));
     return personaCache;
 }
-
-export function clearPersonaCache(): void {
-    personaCache = null;
-}

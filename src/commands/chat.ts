@@ -7,7 +7,9 @@ import {
     PermissionsBitField,
 } from 'discord.js';
 import { Guilds } from '../db/database.js';
-import { getAvailablePersonas } from '../utils/personaLoader.js'; import type { Command } from '../types/index.js';
+import { getAvailablePersonas } from '../utils/personaLoader.js';
+import { isVoter } from '../utils/voterCheck.js';
+import type { Command } from '../types/index.js';
 
 const COLORS = {
     primary: 0xFFD700,
@@ -68,6 +70,12 @@ export default {
     cooldown: 5,
 
     execute: async (interaction: ChatInputCommandInteraction): Promise<void> => {
+        const gate = await isVoter(interaction.user.id, 'the /chat command');
+        if (gate) {
+            await interaction.reply({ ...gate, flags: 64 }).catch(() => null);
+            return;
+        }
+
         if (!checkAdminPerms(interaction)) {
             await interaction.reply({
                 embeds: [createEmbed(interaction, '❌ Permission Denied', '```md\n# Requires ManageChannels permission\n```', COLORS.error)],

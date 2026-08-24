@@ -17,5 +17,16 @@
     "premium user": "<:prem:1400780420597157940> premium user",
     "developer": "<:dev:1400780190636052483> developer",
     "staff": "<:mod:1400779892425101343> staff"
-  }
+  },
+  "emojis": [
+    { "name": "happy", "emoji": "<a:tap:1201983225933594717>" },
+    { "name": "angry", "emoji": "<:Angy:1201982906289889360>" },
+    { "name": "wave", "emoji": "<a:emoji_1:1375804280996368434>" },
+    { "name": "scared", "emoji": "<a:scared:1201983290458775582>" },
+    { "name": "confused", "emoji": "<a:confused_what:1201983094589239317>" },
+    { "name": "excited", "emoji": "<a:excited:1201983173785813072>" },
+    { "name": "joy", "emoji": "<a:happy:1256947075631808562>" },
+    { "name": "eating", "emoji": "<:eating:1372320024873668668>" },
+    { "name": "dizzy", "emoji": "<a:dizzy_chinoko:1230832283095662643>" }
+  ]
 }

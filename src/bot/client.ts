@@ -13,6 +13,7 @@ import {
     HeartbeatManager,
 } from "discord-hybrid-sharding";
 import retry from "async-retry";
+import { initTopGG, poststats } from "../integrations/TopGG.js";
 
 export interface MaintenanceState {
     maintenance_mode: boolean;
@@ -48,6 +49,13 @@ export class CustomClient extends Client {
             maintenance_reason: null,
             maintenance_end: null,
         };
+
+        setInterval(() => {
+            const now = Date.now();
+            for (const [key, expiry] of this.cooldowns) {
+                if (expiry <= now) this.cooldowns.delete(key);
+            }
+        }, 60 * 60 * 1000).unref();
     }
 
     get isMaintenance(): boolean {
@@ -70,19 +78,9 @@ export async function createClient(): Promise<CustomClient> {
             GatewayIntentBits.Guilds,
             GatewayIntentBits.GuildMessages,
             GatewayIntentBits.MessageContent,
-            GatewayIntentBits.GuildMembers,
-            GatewayIntentBits.GuildMessageReactions,
             GatewayIntentBits.DirectMessages,
-            GatewayIntentBits.DirectMessageReactions,
         ],
-        partials: [
-            Partials.Message,
-            Partials.Channel,
-            Partials.Reaction,
-            Partials.GuildMember,
-            Partials.User,
-            Partials.ThreadMember,
-        ],
+        partials: [Partials.Message, Partials.Channel],
     });
 }
 
@@ -102,7 +100,7 @@ export async function loginClient(client: CustomClient, token: string): Promise<
         });
         console.log(`Cluster ${client.cluster?.id} logged in successfully`);
     } catch (error) {
-        console.error("Failed to login after 5 attempts:", error);
+        console.error("Login failed after repeated attempts:", error);
         process.exit(1);
     }
 }
@@ -135,6 +133,7 @@ export async function startManager(options: ManagerOptions): Promise<void> {
             console.log(`Cluster ${cluster.id} ready (${readyClusters}/${manager.totalClusters})`);
             if (readyClusters === manager.totalClusters) {
                 await updatePresence(manager, topGGToken);
+                if (topGGToken) scheduleStats(manager, topGGToken);
             }
         });
 
@@ -183,15 +182,37 @@ async function recluster(manager: ClusterManager, mode: string) {
     await manager.recluster.start({ restartMode: mode });
 }
 
+async function broadcastTotals(manager: ClusterManager): Promise<{ guilds: number; users: number }> {
+    const results = await manager.broadcastEval((client) => ({
+        guilds: client.guilds.cache.size,
+        users: client.guilds.cache.reduce((a, g) => a + g.memberCount, 0),
+    }));
+
+    return {
+        guilds: results.reduce((a, b) => a + b.guilds, 0),
+        users: results.reduce((a, b) => a + b.users, 0),
+    };
+}
+
+function scheduleStats(manager: ClusterManager, topGGToken: string): void {
+    initTopGG(topGGToken);
+
+    const post = async () => {
+        try {
+            const totals = await broadcastTotals(manager);
+            await poststats(totals.guilds, manager.totalShards);
+        } catch (error) {
+            console.error("Top.gg stats update failed:", error);
+        }
+    };
+
+    void post();
+    setInterval(post, 30 * 60 * 1000).unref();
+}
+
 async function updatePresence(manager: ClusterManager, topGGToken: string | null) {
     try {
-        const results = await manager.broadcastEval((client) => ({
-            guilds: client.guilds.cache.size,
-            users: client.guilds.cache.reduce((a, g) => a + g.memberCount, 0),
-        }));
-
-        const totalGuilds = results.reduce((a, b) => a + b.guilds, 0);
-        const totalUsers = results.reduce((a, b) => a + b.users, 0);
+        const { guilds: totalGuilds, users: totalUsers } = await broadcastTotals(manager);
 
         if (topGGToken) {
             console.log(`Stats: ${totalGuilds} guilds, ${manager.totalShards} shards`);

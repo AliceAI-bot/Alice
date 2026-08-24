@@ -1,8 +1,11 @@
-import { DocumentNotFoundError, Collection } from 'couchbase';
+import { DocumentNotFoundError, PathNotFoundError, Collection, MutateInSpec } from 'couchbase';
 import CouchbaseClient from '../integrations/couchbase.js';
 import { encrypt, decrypt, hashKey } from '../integrations/crypto.js';
+import { RelationshipState, createRelationship } from '../utils/relationship.js';
 
 export type Tier = 'free' | 'premium' | 'byok';
+
+export type { RelationshipStatus } from '../utils/relationship.js';
 
 export interface UserData {
     acceptedAt: number;
@@ -14,10 +17,7 @@ export interface UserData {
         firstSeen: number;
     };
     badges: string[];
-    relationship: {
-        affection: number;
-        status: 'stranger' | 'friend' | 'close_friend' | 'bestie' | 'enemy' | 'lovers' | 'married';
-    };
+    relationship: RelationshipState;
     memories: string[];
     blacklisted: boolean;
     blacklistReason: string | null;
@@ -35,6 +35,14 @@ export interface GuildData {
 
 class UsersModel {
     constructor(private collection: Collection) {}
+
+    private serialize(data: UserData): UserData {
+        return {
+            ...data,
+            byokKey: data.byokKey ? encrypt(data.byokKey) : null,
+            blacklistReason: data.blacklistReason ? encrypt(data.blacklistReason) : null,
+        };
+    }
 
     async get(userId: string): Promise<UserData | null> {
         try {
@@ -63,7 +71,7 @@ class UsersModel {
             byokKey: null,
             stats: { messagesSent: 0, firstSeen: Date.now() },
             badges: [],
-            relationship: { affection: 0, status: 'stranger' },
+            relationship: createRelationship(),
             memories: [],
             blacklisted: false,
             blacklistReason: null,
@@ -73,16 +81,11 @@ class UsersModel {
         return fresh;
     }
 
-    async update(userId: string, patch: Partial<UserData>): Promise<void> {
-        const key = hashKey(userId);
-        const existing = await this.get(userId);
+    async update(userId: string, patch: Partial<UserData>, base?: UserData): Promise<void> {
+        const existing = base ?? (await this.get(userId));
         if (!existing) throw new Error('User not found');
 
-        const data = { ...existing, ...patch };
-        if (patch.byokKey !== undefined) data.byokKey = patch.byokKey ? encrypt(patch.byokKey) : null;
-        if (patch.blacklistReason !== undefined) data.blacklistReason = patch.blacklistReason ? encrypt(patch.blacklistReason) : null;
-
-        await this.collection.upsert(key, data);
+        await this.collection.upsert(hashKey(userId), this.serialize({ ...existing, ...patch }));
     }
 
     async hasAcceptedTos(userId: string): Promise<boolean> {
@@ -107,34 +110,46 @@ class UsersModel {
         return user?.blacklistReason ?? null;
     }
 
-    async incrementMessages(userId: string): Promise<void> {
-        const user = await this.ensure(userId);
-        await this.update(userId, {
-            stats: { ...user.stats, messagesSent: user.stats.messagesSent + 1 },
-        });
+    async saveInteraction(
+        userId: string,
+        base: UserData,
+        rel: RelationshipState,
+        memories?: string[],
+    ): Promise<void> {
+        await this.update(
+            userId,
+            {
+                relationship: rel,
+                ...(memories ? { memories } : {}),
+                stats: { ...base.stats, messagesSent: base.stats.messagesSent + 1 },
+            },
+            base,
+        );
+    }
+
+    async bumpMessages(userId: string, base: UserData, memories?: string[]): Promise<void> {
+        const specs: MutateInSpec[] = [MutateInSpec.increment('stats.messagesSent', 1)];
+        if (memories) specs.push(MutateInSpec.replace('memories', memories));
+
+        try {
+            await this.collection.mutateIn(hashKey(userId), specs);
+        } catch (err) {
+            if (!(err instanceof PathNotFoundError)) throw err;
+            await this.update(
+                userId,
+                {
+                    ...(memories ? { memories } : {}),
+                    stats: { ...base.stats, messagesSent: base.stats.messagesSent + 1 },
+                },
+                base,
+            );
+        }
     }
 
     async addMemory(userId: string, memory: string, maxSlots: number): Promise<void> {
         const user = await this.ensure(userId);
         const memories = [...user.memories, memory].slice(-maxSlots);
         await this.update(userId, { memories });
-    }
-
-    async updateAffection(userId: string, delta: number): Promise<void> {
-        const user = await this.ensure(userId);
-        const affection = Math.max(-100, Math.min(100, user.relationship.affection + delta));
-        const status = this.affectionToStatus(affection);
-        await this.update(userId, { relationship: { affection, status } });
-    }
-
-    private affectionToStatus(affection: number): UserData['relationship']['status'] {
-        if (affection >= 95) return 'married';
-        if (affection >= 80) return 'lovers';
-        if (affection >= 65) return 'bestie';
-        if (affection >= 50) return 'close_friend';
-        if (affection >= 30) return 'friend';
-        if (affection >= 0) return 'stranger';
-        return 'enemy';
     }
 
     async addBadge(userId: string, badge: string): Promise<void> {
@@ -194,26 +209,6 @@ class GuildsModel {
         const config = guild.channels[hashed];
         if (!config) return null;
         return decrypt(config.persona);
-    }
-
-    async getAllChannels(guildId: string): Promise<Record<string, string>> {
-        const guild = await this.get(guildId);
-        if (!guild) return {};
-        const decrypted: Record<string, string> = {};
-        for (const [, config] of Object.entries(guild.channels)) {
-            try {
-                const channelId = decrypt(config.channelId);
-                const persona = decrypt(config.persona);
-                decrypted[channelId] = persona;
-            } catch {
-                // skip corrupted entries
-            }
-        }
-        return decrypted;
-    }
-
-    async clearGuild(guildId: string): Promise<void> {
-        await this.remove(guildId);
     }
 }
 

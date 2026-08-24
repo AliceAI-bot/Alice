@@ -1,6 +1,6 @@
-import { Events, Interaction, ChatInputCommandInteraction, ButtonInteraction } from 'discord.js'; import { CustomClient } from '../bot/client.js'; import { ensureTos, createTosEmbed, handleTosButton } from '../utils/tos.js'; import { isBlacklisted } from '../utils/blacklistUtil.js'; import { handleByokButton, handleByokModal } from '../commands/byok.js'; import type { Event, Command } from '../types/index.js';
+import { Events, Interaction, ChatInputCommandInteraction, ButtonInteraction } from 'discord.js'; import { CustomClient } from '../bot/client.js'; import { createTosEmbed, handleTosButton } from '../utils/tos.js'; import { Users } from '../db/database.js'; import { isBlacklisted } from '../utils/blacklistUtil.js'; import { handleByokButton, handleByokModal } from '../commands/byok.js'; import type { Event, Command } from '../types/index.js';
 // ik ik the above line is very sigma lol
-// 
+//
 export default {
     name: Events.InteractionCreate,
     async execute(interaction: Interaction, client: CustomClient): Promise<void> {
@@ -42,14 +42,16 @@ export default {
             return;
         }
 
-        const hasAccepted = await ensureTos(interaction.user.id);
+        const [hasAccepted, blacklistResponse] = await Promise.all([
+            Users.hasAcceptedTos(interaction.user.id),
+            isBlacklisted(interaction.user.id, interaction.client),
+        ]);
         if (!hasAccepted) {
             const tos = createTosEmbed();
             await interaction.reply({ ...tos, flags: 64 }).catch(() => null);
             return;
         }
 
-        const blacklistResponse = await isBlacklisted(interaction.user.id, interaction.client);
         if (blacklistResponse) {
             await interaction.reply({ ...blacklistResponse, flags: 64 }).catch(() => null);
             return;

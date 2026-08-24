@@ -1,11 +1,6 @@
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageComponentInteraction } from 'discord.js';
 import { Users } from '../db/database.js';
 
-export async function ensureTos(userId: string): Promise<boolean> {
-    const user = await Users.get(userId);
-    return user !== null;
-}
-
 export function createTosEmbed(): { embeds: EmbedBuilder[]; components: ActionRowBuilder<ButtonBuilder>[] } {
     const embed = new EmbedBuilder()
         .setColor(0xffd700)
