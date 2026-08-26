@@ -1,4 +1,4 @@
-import { connect, Cluster, Collection } from 'couchbase';
+import { connect, Collection } from 'couchbase';
 import { loadEnv } from '../config/env.js';
 
 interface Collections {
@@ -7,21 +7,20 @@ interface Collections {
 }
 
 class CouchbaseClient {
-    private static cluster: Cluster | null = null;
     private static collections: Collections | null = null;
     private static readonly COLLECTIONS: (keyof Collections)[] = ['users', 'guilds'];
 
     static async init(): Promise<Collections> {
         if (this.collections) return this.collections!;
 
-        this.cluster = await connect(loadEnv('couchbase'), {
+        const cluster = await connect(loadEnv('couchbase'), {
             username: loadEnv('couchbase_user'),
             password: loadEnv('couchbase_pass'),
             configProfile: 'wanDevelopment',
             timeouts: { kvTimeout: 10000 },
         });
 
-        const bucket = this.cluster.bucket('alice');
+        const bucket = cluster.bucket('alice');
         const scope = bucket.scope('_default');
 
         await this.ensureCollections(bucket);
@@ -59,23 +58,6 @@ class CouchbaseClient {
                 }
             }
         }
-    }
-
-    static getCluster(): Cluster {
-        if (!this.cluster) throw new Error('Couchbase not initialized. Call init() first.');
-        return this.cluster;
-    }
-
-    static getCollections(): Collections {
-        if (!this.collections) throw new Error('Couchbase not initialized. Call init() first.');
-        return this.collections;
-    }
-
-    static async close(): Promise<void> {
-        if (!this.cluster) return;
-        await this.cluster.close();
-        this.cluster = null;
-        this.collections = null;
     }
 }
 

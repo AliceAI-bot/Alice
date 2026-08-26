@@ -14,7 +14,26 @@ if (!token) {
 const topGGToken = loadEnv('DBL_Token');
 let clientInstance: CustomClient | undefined;
 
+const BOOT_TIMEOUT_MS = 30_000;
+
+/**
+ * Rejects if `task` isn't settled within the boot budget so a hung
+ * Couchbase/Redis can never stall the cluster silently — exiting lets
+ * hybrid-sharding respawn us immediately.
+ */
+function withBootTimeout<T>(what: string, task: Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(
+            () => reject(new Error(`${what} not ready within ${BOOT_TIMEOUT_MS}ms`)),
+            BOOT_TIMEOUT_MS,
+        );
+        timer.unref();
+        task.then(resolve, reject);
+    });
+}
+
 export async function runner() {
+    const startedAt = Date.now();
     const dbReady = initDB();
     dbReady.catch(() => {});
 
@@ -28,13 +47,18 @@ export async function runner() {
 
         clientInstance.once('clientReady', async (readyClient) => {
             console.log(`Shard ${clientInstance!.cluster!.info.SHARD_LIST.join(',')} ready as ${readyClient.user.tag}`);
+            console.log(`[boot] gateway ready in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
             clientInstance!.cluster!.triggerReady();
             try {
-                await dbReady;
+                await withBootTimeout('Couchbase', dbReady);
+                console.log(`[boot] couchbase ready in ${Date.now() - startedAt}ms`);
                 await ready(clientInstance!);
-                console.log('Alice is fully operational');
+                console.log(`[boot] Alice fully operational in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
             } catch (error) {
-                console.error('Failed to initialize bot:', error);
+                console.error(
+                    '[boot] Startup failed/timed out — exiting for respawn:',
+                    error instanceof Error ? error.message : error,
+                );
                 process.exit(1);
             }
         });

@@ -306,8 +306,14 @@ async function handleProcess(
         if (vote && now - vote.checkedAt < VOTE_FRESH_MS) {
             voted = vote.voted;
         } else {
-            voted = await refreshVote(userId);
-            vote = { voted, checkedAt: now } satisfies UserVoteState;
+            const fresh = await refreshVote(userId);
+            if (fresh === null) {
+                // top.gg unreachable: keep last known status, don't extend its freshness.
+                voted = vote?.voted ?? false;
+            } else {
+                voted = fresh;
+                vote = { voted, checkedAt: now } satisfies UserVoteState;
+            }
         }
 
         const base = user.tier === 'premium' ? RELATIONSHIP_CONFIG.usage.premium : RELATIONSHIP_CONFIG.usage.free;
@@ -320,6 +326,7 @@ async function handleProcess(
         }
     }
 
+    if (!message.channel) return null;
     const isDM = message.channel.isDMBased();
     const key = sessionKey(isDM ? null : message.guildId, message.channelId);
     const [session, images] = await Promise.all([

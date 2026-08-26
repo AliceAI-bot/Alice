@@ -146,11 +146,6 @@ export async function persistTurn(
     await tx.exec();
 }
 
-export async function getUsage(userId: string): Promise<number> {
-    const state = await getUserState(userId);
-    return state.usage.day === usageToday() ? state.usage.count : 0;
-}
-
 const IGNORED_PREFIX = 'ignored:';
 
 function ignoredKey(userId: string): string {

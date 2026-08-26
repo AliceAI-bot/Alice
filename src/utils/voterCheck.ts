@@ -1,12 +1,13 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
-import { loadEnv } from '../config/env.js';
 import { Users } from '../db/database.js';
 import { getUserState, saveUserState, VOTE_FRESH_MS } from '../db/redisStore.js';
 import type { UserState } from '../db/redisStore.js';
+import { getTopggApi } from '../integrations/TopGG.js';
+import { loadEnv } from '../config/env.js';
 
-const BOT_ID = '1111646562687397928';
-  const VOTE_URL = `https://top.gg/bot/${BOT_ID}/vote`;
-  const PREMIUM_URL = 'https://www.buymeacoffee.com/AliceAI';
+const PREMIUM_URL = 'https://www.buymeacoffee.com/AliceAI';
+
+const voteUrl = (botId: string): string => `https://top.gg/bot/${botId}/vote`;
 
 let queue: Promise<unknown> = Promise.resolve();
 
@@ -19,34 +20,70 @@ function rateLimited<T>(fn: () => Promise<T>): Promise<T> {
     return run;
 }
 
-export async function queryTopggVote(userId: string): Promise<boolean> {
-    try {
-        const token = loadEnv('DBL_Token');
-        if (!token) return false;
+const FAILURE_BACKOFF_MS = 5 * 60 * 1000;
+let failingUntil = 0;
 
-        const res = await fetch(`https://top.gg/api/bots/${BOT_ID}/check?userId=${userId}`, {
-            headers: {
-                Authorization: token,
-                'Content-Type': 'application/json',
-            },
-        });
-
-        if (!res.ok) {
-            console.error(`Vote check failed: ${res.status} - ${res.statusText}`);
-            return false;
-        }
-
-        const data = (await res.json()) as { voted?: number };
-        return data?.voted === 1;
-    } catch (error) {
-        console.error('Vote check failed:', error);
-        return false;
-    }
+function backoff(reason: string): null {
+    failingUntil = Date.now() + FAILURE_BACKOFF_MS;
+    console.error(
+        `[votes] top.gg unavailable (${reason}) — backing off for ${FAILURE_BACKOFF_MS / 1000}s`,
+    );
+    return null;
 }
 
-const inflightVotes = new Map<string, Promise<boolean>>();
+/**
+ * Vote status via the Top.gg v1 API. Documented semantics: a 404 means the
+ * user has not voted / their vote expired — a definitive answer, not an error.
+ * Returns null only when top.gg is unreachable or both API generations reject
+ * us; callers keep their previous state in that case.
+ */
+async function queryTopggVote(userId: string): Promise<boolean | null> {
+    const now = Date.now();
+    if (now < failingUntil) return null;
 
-export function refreshVote(userId: string): Promise<boolean> {
+    const token = loadEnv('DBL_Token');
+    if (!token) return false;
+
+    // v1 requires the Bearer prefix; legacy tokens are passed raw.
+    const auth = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+
+    let res: Response;
+    try {
+        res = await fetch(`https://top.gg/api/v1/projects/@me/votes/${userId}?source=discord`, {
+            headers: { Authorization: auth },
+        });
+    } catch (error) {
+        return backoff(error instanceof Error ? error.message : String(error));
+    }
+
+    if (res.status === 404) return false;
+
+    if (res.ok) {
+        try {
+            const data = (await res.json()) as { expires_at?: string };
+            return Boolean(data.expires_at && Date.parse(data.expires_at) > now);
+        } catch {
+            return backoff('malformed v1 response');
+        }
+    }
+
+    if (res.status === 401 || res.status === 403) {
+        // Legacy token without v1 access — fall back to the legacy endpoint.
+        const api = getTopggApi();
+        if (!api) return false;
+        try {
+            return await api.hasVoted(userId);
+        } catch (error) {
+            return backoff(error instanceof Error ? error.message : String(error));
+        }
+    }
+
+    return backoff(`HTTP ${res.status}`);
+}
+
+const inflightVotes = new Map<string, Promise<boolean | null>>();
+
+export function refreshVote(userId: string): Promise<boolean | null> {
     const pending = inflightVotes.get(userId);
     if (pending) return pending;
 
@@ -63,6 +100,7 @@ export async function checkVoteCached(userId: string, state: UserState): Promise
     }
 
     const voted = await refreshVote(userId);
+    if (voted === null) return state.vote?.voted ?? false;
 
     try {
         state.vote = { voted, checkedAt: Date.now() };
@@ -78,7 +116,8 @@ export async function checkVote(userId: string): Promise<boolean> {
     try {
         state = await getUserState(userId);
     } catch {
-        return rateLimited(() => queryTopggVote(userId));
+        const voted = await rateLimited(() => queryTopggVote(userId));
+        return voted ?? false;
     }
 
     return checkVoteCached(userId, state);
@@ -89,7 +128,11 @@ export interface VotePrompt {
     components: ActionRowBuilder<ButtonBuilder>[];
 }
 
-export async function isVoter(userId: string, need = 'this feature'): Promise<VotePrompt | null> {
+export async function isVoter(
+    userId: string,
+    need = 'this feature',
+    botId?: string,
+): Promise<VotePrompt | null> {
     const user = await Users.get(userId);
     if (user?.tier === 'premium') return null;
 
@@ -114,17 +157,23 @@ export async function isVoter(userId: string, need = 'this feature'): Promise<Vo
             iconURL: 'https://top.gg/favicon.ico',
         });
 
-    const voteRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder()
-            .setLabel('Vote on Top.gg')
-            .setStyle(ButtonStyle.Link)
-            .setURL(VOTE_URL)
-            .setEmoji('⭐'),
+    const components: ActionRowBuilder<ButtonBuilder>[] = [];
+    if (botId) {
+        components.push(
+            new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                    .setLabel('Vote on Top.gg')
+                    .setStyle(ButtonStyle.Link)
+                    .setURL(voteUrl(botId))
+                    .setEmoji('⭐'),
+            ),
+        );
+    }
+    components.push(
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder().setLabel('💎 Get Premium 💎').setStyle(ButtonStyle.Link).setURL(PREMIUM_URL),
+        ),
     );
 
-    const premiumRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setLabel('💎 Get Premium 💎').setStyle(ButtonStyle.Link).setURL(PREMIUM_URL),
-    );
-
-    return { embeds: [embed], components: [voteRow, premiumRow] };
+    return { embeds: [embed], components };
 }

@@ -70,7 +70,7 @@ export default {
     cooldown: 5,
 
     execute: async (interaction: ChatInputCommandInteraction): Promise<void> => {
-        const gate = await isVoter(interaction.user.id, 'the /chat command');
+        const gate = await isVoter(interaction.user.id, 'the /chat command', interaction.client.user?.id);
         if (gate) {
             await interaction.reply({ ...gate, flags: 64 }).catch(() => null);
             return;

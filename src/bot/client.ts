@@ -2,6 +2,7 @@ import {
     Client,
     Collection,
     GatewayIntentBits,
+    Options,
     Partials,
     type ClientOptions,
 } from "discord.js";
@@ -14,12 +15,6 @@ import {
 } from "discord-hybrid-sharding";
 import retry from "async-retry";
 import { initTopGG, poststats } from "../integrations/TopGG.js";
-
-export interface MaintenanceState {
-    maintenance_mode: boolean;
-    maintenance_reason: string | null;
-    maintenance_end: Date | null;
-}
 
 export interface CustomClientOptions extends ClientOptions {
     shards?: number[];
@@ -37,18 +32,12 @@ export class CustomClient extends Client {
     slashCommands: Collection<string, unknown>;
     cooldowns: Collection<string, number>;
     cluster: ClusterClient<this> | null;
-    maintenance: MaintenanceState;
 
     constructor(options: CustomClientOptions) {
         super(options);
         this.slashCommands = new Collection();
         this.cooldowns = new Collection();
         this.cluster = null;
-        this.maintenance = {
-            maintenance_mode: false,
-            maintenance_reason: null,
-            maintenance_end: null,
-        };
 
         setInterval(() => {
             const now = Date.now();
@@ -56,15 +45,15 @@ export class CustomClient extends Client {
                 if (expiry <= now) this.cooldowns.delete(key);
             }
         }, 60 * 60 * 1000).unref();
-    }
 
-    get isMaintenance(): boolean {
-        if (!this.maintenance.maintenance_mode) return false;
-        if (this.maintenance.maintenance_end && new Date() > this.maintenance.maintenance_end) {
-            this.maintenance.maintenance_mode = false;
-            return false;
-        }
-        return true;
+        setInterval(() => {
+            const m = process.memoryUsage();
+            const mb = (n: number) => `${(n / 1024 / 1024).toFixed(0)}MB`;
+            console.log(
+                `[mem] cluster=${this.cluster?.id ?? '?'} rss=${mb(m.rss)} heapUsed=${mb(m.heapUsed)} ` +
+                    `heapTotal=${mb(m.heapTotal)} external=${mb(m.external)}`,
+            );
+        }, 5 * 60 * 1000).unref();
     }
 }
 
@@ -81,6 +70,30 @@ export async function createClient(): Promise<CustomClient> {
             GatewayIntentBits.DirectMessages,
         ],
         partials: [Partials.Message, Partials.Channel],
+        makeCache: Options.cacheWithLimits({
+            ...Options.DefaultMakeCacheSettings,
+            // Alice keeps conversation history in Redis, never reads the
+            // Discord message cache — keep it tiny.
+            MessageManager: 50,
+            // Never read by this codebase; thread member caches in particular
+            // grow with every member of every joined thread otherwise.
+            // (Invites aren't cacheable in discord.js at all.)
+            ThreadMemberManager: 0,
+            ReactionManager: 0,
+            GuildBanManager: 0,
+        }),
+        sweepers: {
+            messages: { interval: 600, lifetime: 600 },
+            users: {
+                interval: 3600,
+                filter: () => (user) => user.id !== user.client.user.id,
+            },
+            guildMembers: {
+                interval: 3600,
+                filter: () => (member) => member.id !== member.client.user.id,
+            },
+            threads: { interval: 1800, lifetime: 3600 },
+        },
     });
 }
 
@@ -165,7 +178,8 @@ export async function startManager(options: ManagerOptions): Promise<void> {
     });
 
     try {
-        await manager.spawn({ amount: "auto", delay: 2000, timeout: 600000 });
+        // 7s+ between spawns avoids the /gateway/bot global rate limit warning.
+        await manager.spawn({ amount: "auto", delay: 7500, timeout: 600000 });
     } catch (error) {
         console.error("Fatal error during startup:", error);
         process.exit(1);

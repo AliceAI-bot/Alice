@@ -12,6 +12,8 @@ export default {
     execute: async (interaction: ChatInputCommandInteraction) => {
         await interaction.deferReply();
 
+        const botId = interaction.client.user?.id ?? '';
+
         const embed = new EmbedBuilder()
             .setColor('#FFD700')
             .setTitle('🌟 Invite Alice')
@@ -33,7 +35,7 @@ export default {
                 new ButtonBuilder()
                     .setStyle(ButtonStyle.Link)
                     .setLabel('Add to Server')
-                    .setURL('https://discord.com/oauth2/authorize?client_id=1111646562687397928&permissions=140126800960&scope=bot')
+                    .setURL(`https://discord.com/oauth2/authorize?client_id=${botId}&permissions=140126800960&scope=bot`)
                     .setEmoji('➕'),
                 new ButtonBuilder()
                     .setStyle(ButtonStyle.Link)
@@ -43,7 +45,7 @@ export default {
                 new ButtonBuilder()
                     .setStyle(ButtonStyle.Link)
                     .setLabel('Vote on Top.gg')
-                    .setURL('https://top.gg/bot/1111646562687397928#reviews')
+                    .setURL(`https://top.gg/bot/${botId}/vote`)
                     .setEmoji('⭐')
             );
 

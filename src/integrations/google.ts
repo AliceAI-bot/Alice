@@ -78,7 +78,7 @@ function toContents(messages: AiMessage[], images?: ChatImage[]): Content[] {
     return contents;
 }
 
-const BYOK_CACHE_MAX = 200;
+const BYOK_CACHE_MAX = 50;
 const byokClients = new Map<string, GoogleGenAI>();
 
 function byokClient(apiKey: string): GoogleGenAI {

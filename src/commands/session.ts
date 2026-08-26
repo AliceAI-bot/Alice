@@ -12,7 +12,7 @@ export default {
     cooldown: 10,
 
     async execute(interaction: ChatInputCommandInteraction): Promise<void> {
-        const gate = await isVoter(interaction.user.id, 'the session reset command');
+        const gate = await isVoter(interaction.user.id, 'the session reset command', interaction.client.user?.id);
         if (gate) {
             await interaction.reply({ ...gate, flags: 64 }).catch(() => null);
             return;

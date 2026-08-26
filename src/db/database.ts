@@ -33,6 +33,69 @@ export interface GuildData {
     createdAt: number;
 }
 
+export interface GateData {
+    accepted: boolean;
+    blacklisted: boolean;
+    reason: string | null;
+}
+
+// In-process read-through cache for user documents. Every mutating method
+// invalidates/updates it, so same-process writes are always coherent; writes
+// from other processes become visible within USER_CACHE_TTL_MS.
+const USER_CACHE_TTL_MS = 3 * 60 * 1000;
+const USER_CACHE_MAX = 2000;
+
+interface UserCacheEntry {
+    data: UserData;
+    expiresAt: number;
+}
+
+const userCache = new Map<string, UserCacheEntry>();
+
+function cloneUser(data: UserData): UserData {
+    return {
+        ...data,
+        stats: { ...data.stats },
+        badges: [...data.badges],
+        relationship: { ...data.relationship },
+        memories: [...data.memories],
+    };
+}
+
+function userCacheGet(userId: string): UserData | null {
+    const entry = userCache.get(userId);
+    if (!entry) return null;
+
+    if (entry.expiresAt <= Date.now()) {
+        userCache.delete(userId);
+        return null;
+    }
+
+    // Refresh LRU position.
+    userCache.delete(userId);
+    userCache.set(userId, entry);
+    return cloneUser(entry.data);
+}
+
+function userCacheSet(userId: string, data: UserData): void {
+    userCache.delete(userId);
+    userCache.set(userId, { data: cloneUser(data), expiresAt: Date.now() + USER_CACHE_TTL_MS });
+
+    if (userCache.size > USER_CACHE_MAX) {
+        const oldest = userCache.keys().next().value;
+        if (oldest !== undefined) userCache.delete(oldest);
+    }
+}
+
+function userCachePatch(
+    userId: string,
+    patch: (data: UserData) => void,
+): void {
+    const entry = userCache.get(userId);
+    if (!entry || entry.expiresAt <= Date.now()) return;
+    patch(entry.data);
+}
+
 class UsersModel {
     constructor(private collection: Collection) {}
 
@@ -45,15 +108,20 @@ class UsersModel {
     }
 
     async get(userId: string): Promise<UserData | null> {
+        const cached = userCacheGet(userId);
+        if (cached) return cached;
+
         try {
             const doc = await this.collection.get(hashKey(userId));
-            const data = doc.content as any;
+            const raw = doc.content as any;
 
-            return {
-                ...data,
-                byokKey: data.byokKey ? decrypt(data.byokKey) : null,
-                blacklistReason: data.blacklistReason ? decrypt(data.blacklistReason) : null,
+            const data: UserData = {
+                ...raw,
+                byokKey: raw.byokKey ? decrypt(raw.byokKey) : null,
+                blacklistReason: raw.blacklistReason ? decrypt(raw.blacklistReason) : null,
             };
+            userCacheSet(userId, data);
+            return cloneUser(data);
         } catch (err) {
             if (err instanceof DocumentNotFoundError) return null;
             throw err;
@@ -78,7 +146,8 @@ class UsersModel {
         };
 
         await this.collection.insert(hashKey(userId), fresh);
-        return fresh;
+        userCacheSet(userId, fresh);
+        return cloneUser(fresh);
     }
 
     async update(userId: string, patch: Partial<UserData>, base?: UserData): Promise<void> {
@@ -86,10 +155,13 @@ class UsersModel {
         if (!existing) throw new Error('User not found');
 
         await this.collection.upsert(hashKey(userId), this.serialize({ ...existing, ...patch }));
+        userCacheSet(userId, { ...existing, ...patch });
     }
 
-    async hasAcceptedTos(userId: string): Promise<boolean> {
-        return (await this.get(userId)) !== null;
+    async getGateData(userId: string): Promise<GateData> {
+        const user = await this.get(userId);
+        if (!user) return { accepted: false, blacklisted: false, reason: null };
+        return { accepted: true, blacklisted: user.blacklisted, reason: user.blacklistReason };
     }
 
     async blacklist(userId: string, reason = 'Unknown'): Promise<void> {
@@ -101,30 +173,51 @@ class UsersModel {
     }
 
     async isBlacklisted(userId: string): Promise<boolean> {
-        const user = await this.get(userId);
-        return user?.blacklisted ?? false;
+        const gate = await this.getGateData(userId);
+        return gate.blacklisted;
     }
 
     async getBlacklistReason(userId: string): Promise<string | null> {
-        const user = await this.get(userId);
-        return user?.blacklistReason ?? null;
+        return (await this.get(userId))?.blacklistReason ?? null;
     }
 
     async saveInteraction(
         userId: string,
-        base: UserData,
+        _base: UserData,
         rel: RelationshipState,
         memories?: string[],
     ): Promise<void> {
-        await this.update(
-            userId,
-            {
-                relationship: rel,
-                ...(memories ? { memories } : {}),
-                stats: { ...base.stats, messagesSent: base.stats.messagesSent + 1 },
-            },
-            base,
-        );
+        // Sub-document write: never clobbers fields changed elsewhere
+        // (premium/badges) while we held a possibly-stale copy of the doc.
+        const specs: MutateInSpec[] = [
+            MutateInSpec.increment('stats.messagesSent', 1),
+            MutateInSpec.replace('relationship', rel),
+        ];
+        if (memories) specs.push(MutateInSpec.replace('memories', memories));
+
+        try {
+            await this.collection.mutateIn(hashKey(userId), specs);
+        } catch (err) {
+            if (!(err instanceof PathNotFoundError)) throw err;
+            await this.update(
+                userId,
+                {
+                    relationship: rel,
+                    ...(memories ? { memories } : {}),
+                },
+                _base,
+            );
+            userCachePatch(userId, (data) => {
+                data.stats.messagesSent += 1;
+            });
+            return;
+        }
+
+        userCachePatch(userId, (data) => {
+            data.stats.messagesSent += 1;
+            data.relationship = { ...rel };
+            if (memories) data.memories = [...memories];
+        });
     }
 
     async bumpMessages(userId: string, base: UserData, memories?: string[]): Promise<void> {
@@ -143,13 +236,13 @@ class UsersModel {
                 },
                 base,
             );
+            return;
         }
-    }
 
-    async addMemory(userId: string, memory: string, maxSlots: number): Promise<void> {
-        const user = await this.ensure(userId);
-        const memories = [...user.memories, memory].slice(-maxSlots);
-        await this.update(userId, { memories });
+        userCachePatch(userId, (data) => {
+            data.stats.messagesSent += 1;
+            if (memories) data.memories = [...memories];
+        });
     }
 
     async addBadge(userId: string, badge: string): Promise<void> {

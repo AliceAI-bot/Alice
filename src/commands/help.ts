@@ -10,13 +10,13 @@ import {
 import { cpus, totalmem, freemem } from 'os';
 import type { Command } from '../types/index.js';
 
-const createButtonRow = () => {
+const createButtonRow = (botId: string) => {
     return new ActionRowBuilder<ButtonBuilder>()
         .addComponents(
             new ButtonBuilder()
                 .setStyle(ButtonStyle.Link)
                 .setLabel('Add to Server')
-                .setURL('https://discord.com/oauth2/authorize?client_id=1111646562687397928&permissions=140126800960&scope=bot')
+                .setURL(`https://discord.com/oauth2/authorize?client_id=${botId}&permissions=140126800960&scope=bot`)
                 .setEmoji('➕'),
             new ButtonBuilder()
                 .setStyle(ButtonStyle.Link)
@@ -26,7 +26,7 @@ const createButtonRow = () => {
             new ButtonBuilder()
                 .setStyle(ButtonStyle.Link)
                 .setLabel('Vote on Top.gg')
-                .setURL('https://top.gg/bot/1111646562687397928#reviews')
+                .setURL(`https://top.gg/bot/${botId}/vote`)
                 .setEmoji('⭐'),
         );
 };
@@ -77,7 +77,7 @@ export default {
             ]);
 
         const menuRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
-        const buttonRow = createButtonRow();
+        const buttonRow = createButtonRow(interaction.client.user?.id ?? '');
 
         await interaction.followUp({
             embeds: [embed],
@@ -153,16 +153,19 @@ export default {
                                 clusterInfo = `Cluster ${clusterClient.id} / ${clusterClient.manager.totalClusters}`;
                                 shardInfo = `${clusterClient.shardList.join(', ')} / ${clusterClient.shardCount}`;
 
-                                const results = await clusterClient.manager.fetchClientValues('guilds.cache.size') as number[];
-                                totalGuilds = results.reduce((a, b) => a + b, 0);
+                                // Single broadcast for all totals instead of three round-trips.
+                                const results = (await clusterClient.manager.broadcastEval((c: any) => ({
+                                    guilds: c.guilds.cache.size,
+                                    channels: c.channels.cache.size,
+                                    users: c.guilds.cache.reduce(
+                                        (total: number, guild: any) => total + (guild.memberCount || 0),
+                                        0
+                                    ),
+                                }))) as Array<{ guilds: number; channels: number; users: number }>;
 
-                                const userResults = (await clusterClient.manager.broadcastEval((c: any) =>
-                                    c.guilds.cache.reduce((total: number, guild: any) => total + (guild.memberCount || 0), 0)
-                                )) as number[];
-                                totalUsers = userResults.reduce((a, b) => a + b, 0);
-
-                                const channelResults = await clusterClient.manager.fetchClientValues('channels.cache.size') as number[];
-                                totalChannels = channelResults.reduce((a, b) => a + b, 0);
+                                totalGuilds = results.reduce((a, b) => a + b.guilds, 0);
+                                totalChannels = results.reduce((a, b) => a + b.channels, 0);
+                                totalUsers = results.reduce((a, b) => a + b.users, 0);
                             } else if (clusterClient) {
                                 clusterInfo = `${clusterClient.id}`;
                                 shardInfo = `${clusterClient.shardList.join(', ')} / ${clusterClient.shardCount}`;
