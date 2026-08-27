@@ -16,11 +16,6 @@ let clientInstance: CustomClient | undefined;
 
 const BOOT_TIMEOUT_MS = 30_000;
 
-/**
- * Rejects if `task` isn't settled within the boot budget so a hung
- * Couchbase/Redis can never stall the cluster silently — exiting lets
- * hybrid-sharding respawn us immediately.
- */
 function withBootTimeout<T>(what: string, task: Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
         const timer = setTimeout(

@@ -71,9 +71,6 @@ export default {
     async execute(message: Message, client: CustomClient): Promise<void> {
         if (!message.author || message.author.bot || message.system) return;
         if (message.author.id === client.user?.id) return;
-
-        // The channel cache can evict entries between event dispatch and our
-        // reply (12k-guild scale), leaving Message#channel null.
         let channel = message.channel;
         if (!channel) {
             const fetched = await client.channels.fetch(message.channelId).catch(() => null);
@@ -101,7 +98,7 @@ export default {
         }
 
         const clientId = client.user?.id;
-        const mentioned = Boolean(clientId && message.mentions.has(clientId));
+        const mentioned = Boolean(clientId && message.mentions.has(clientId, { ignoreEveryone: true }));
         const persona =
             isDM || !message.guildId ? null : await Guilds.getChannel(message.guildId, message.channelId);
         if (!isDM && persona === null && !mentioned) return;
