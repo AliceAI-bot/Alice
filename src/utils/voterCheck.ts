@@ -2,10 +2,7 @@ import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'disc
 import { Users } from '../db/database.js';
 import { getUserState, saveUserState, VOTE_FRESH_MS } from '../db/redisStore.js';
 import type { UserState } from '../db/redisStore.js';
-import { getTopggApi } from '../integrations/TopGG.js';
 import { loadEnv } from '../config/env.js';
-
-const PREMIUM_URL = 'https://www.buymeacoffee.com/AliceAI';
 
 const voteUrl = (botId: string): string => `https://top.gg/bot/${botId}/vote`;
 
@@ -34,17 +31,22 @@ function backoff(reason: string): null {
 /**
  * Vote status via the Top.gg v1 API. Documented semantics: a 404 means the
  * user has not voted / their vote expired — a definitive answer, not an error.
- * Returns null only when top.gg is unreachable or both API generations reject
- * us; callers keep their previous state in that case.
+ * Returns null only when top.gg is unreachable or the token is rejected;
+ * callers keep their previous state in that case.
+ * Requires a current (v1) project token sent as `Bearer`; legacy tokens
+ * no longer work for vote checks.
  */
 async function queryTopggVote(userId: string): Promise<boolean | null> {
     const now = Date.now();
     if (now < failingUntil) return null;
 
     const token = loadEnv('DBL_Token');
-    if (!token) return false;
+    if (!token) {
+        console.warn('[votes] DBL_Token missing — treating as not voted');
+        return false;
+    }
 
-    // v1 requires the Bearer prefix; legacy tokens are passed raw.
+    // v1 requires the Bearer prefix.
     const auth = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
 
     let res: Response;
@@ -68,14 +70,11 @@ async function queryTopggVote(userId: string): Promise<boolean | null> {
     }
 
     if (res.status === 401 || res.status === 403) {
-        // Legacy token without v1 access — fall back to the legacy endpoint.
-        const api = getTopggApi();
-        if (!api) return false;
-        try {
-            return await api.hasVoted(userId);
-        } catch (error) {
-            return backoff(error instanceof Error ? error.message : String(error));
-        }
+        return backoff(`invalid top.gg token (HTTP ${res.status})`);
+    }
+
+    if (res.status === 429) {
+        return backoff('rate limited (HTTP 429)');
     }
 
     return backoff(`HTTP ${res.status}`);
@@ -169,11 +168,6 @@ export async function isVoter(
             ),
         );
     }
-    components.push(
-        new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder().setLabel('💎 Get Premium 💎').setStyle(ButtonStyle.Link).setURL(PREMIUM_URL),
-        ),
-    );
 
     return { embeds: [embed], components };
 }

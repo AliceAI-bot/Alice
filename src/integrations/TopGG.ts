@@ -7,7 +7,12 @@ export const initTopGG = (token: string): Api => {
         throw new Error("Top.gg token is required");
     }
 
-    apiInstance = new Api(token);
+    // The SDK posts stats via the v0 API, which expects the raw token
+    // (no `Bearer ` prefix). The .env value may carry the prefix for v1
+    // vote checks, so strip it here to support either format.
+    const rawToken = token.startsWith('Bearer ') ? token.slice('Bearer '.length) : token;
+
+    apiInstance = new Api(rawToken);
     console.log("Top.gg API initialized");
     return apiInstance;
 };
