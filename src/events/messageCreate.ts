@@ -1,11 +1,69 @@
-import { Events, Message, PermissionsBitField } from 'discord.js';
+import { Collection, Events, Message, PermissionsBitField } from 'discord.js';
 import type { CustomClient } from '../bot/client.js';
 import { Guilds } from '../db/database.js';
 import { processMessage } from '../ai/processor.js';
+import { cooldownLine } from '../ai/voiceLines.js';
 import type { Event } from '../types/index.js';
 
 const DISCORD_MESSAGE_LIMIT = 2000;
 const AI_COOLDOWN_MS = 3000;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// Rapid-fire batching: single messages send instantly (snappy). If the user spams
+// while a generation is still running, follow-ups buffer and merge into ONE next
+// turn instead of N separate LLM calls. Zero added latency for normal chat.
+const inflight = new Set<string>();
+const pendingBatches = new Map<string, Message[]>();
+
+function batchKeyFor(message: Message): string {
+    return `${message.author.id}:${message.channelId}`;
+}
+
+function drainPending(key: string): Message[] {
+    const arr = pendingBatches.get(key) ?? [];
+    pendingBatches.delete(key);
+    return arr;
+}
+
+/**
+ * Merge rapid-fire follow-ups into one turn: combined text + union of image
+ * attachments (max 2, in order) + union of mentioned users, so the model sees
+ * everything and tools resolve targets correctly. Replies in the latest
+ * message's context.
+ */
+function mergeQueued(queued: Message[]): { message: Message; channel: Message['channel'] } | null {
+    const last = queued[queued.length - 1]!;
+    const combined = queued
+        .map((m) => (m.content ?? '').trim())
+        .filter(Boolean)
+        .join('\n')
+        .slice(0, 2000);
+    if (!combined) return null;
+
+    const attachments = new Collection<string, any>();
+    for (const m of queued) {
+        for (const att of m.attachments.values()) {
+            if (attachments.size >= 2) break;
+            if (att.contentType?.startsWith('image/')) attachments.set(att.id, att);
+        }
+        if (attachments.size >= 2) break;
+    }
+
+    const users = new Collection<string, any>();
+    for (const m of queued) {
+        for (const [id, u] of m.mentions.users) {
+            if (!users.has(id)) users.set(id, u);
+        }
+    }
+
+    const merged = Object.create(last, {
+        content: { value: combined, writable: true },
+        attachments: { value: attachments, writable: true },
+        mentions: { value: { ...last.mentions, users }, writable: true },
+    }) as Message;
+    return { message: merged, channel: last.channel };
+}
 
 // Errors that mean "this channel was never going to accept our message" —
 // dropping them silently is correct, a stack trace per occurrence is not.
@@ -31,7 +89,7 @@ async function safeReply(message: Message, content: string): Promise<void> {
     }
 }
 
-function splitMessage(content: string): string[] {
+function splitHard(content: string): string[] {
     if (content.length <= DISCORD_MESSAGE_LIMIT) return [content];
 
     const parts: string[] = [];
@@ -47,6 +105,37 @@ function splitMessage(content: string): string[] {
     }
     if (remaining.length) parts.push(remaining);
     return parts;
+}
+
+/**
+ * Human texting split: model output should already be 1-2 sentences, so the
+ * common case stays one bubble. Longer stories split into max 2 bubbles at a
+ * sentence boundary (~middle), never into 5 robotic chunks.
+ */
+function splitBubbles(content: string): string[] {
+    const text = content.trim();
+    if (!text) return [];
+    if (text.length <= 280) return splitHard(text);
+    if (text.length > DISCORD_MESSAGE_LIMIT) return splitHard(text);
+
+    // Prefer a paragraph break, else a sentence boundary near the middle.
+    const para = text.indexOf('\n\n');
+    if (para > 60 && para < text.length - 60) {
+        return [text.slice(0, para).trim(), text.slice(para).trim()].flatMap(splitHard);
+    }
+    const mid = Math.floor(text.length / 2);
+    let best = -1;
+    const sentenceRe = /[.!?…]\s/g;
+    let m: RegExpExecArray | null;
+    while ((m = sentenceRe.exec(text)) !== null) {
+        const idx = m.index + m[0].length;
+        if (idx < 60 || idx > text.length - 60) continue;
+        if (best === -1 || Math.abs(idx - mid) < Math.abs(best - mid)) best = idx;
+    }
+    if (best !== -1) {
+        return [text.slice(0, best).trim(), text.slice(best).trim()].flatMap(splitHard);
+    }
+    return splitHard(text).slice(0, 2);
 }
 
 function startTyping(channel: Message['channel']): () => void {
@@ -104,36 +193,76 @@ export default {
             isDM || !message.guildId ? null : await Guilds.getChannel(message.guildId, message.channelId);
         if (!isDM && persona === null && !mentioned) return;
 
+        const key = batchKeyFor(message);
+        if (inflight.has(key)) {
+            const arr = pendingBatches.get(key) ?? [];
+            arr.push(message);
+            pendingBatches.set(key, arr);
+            return;
+        }
+        inflight.add(key);
+        try {
+            await handleTurn(message, client, channel, persona, true);
+            // Drain any rapid-fire follow-ups that landed mid-generation as one merged turn.
+            for (;;) {
+                const queued = drainPending(key);
+                if (!queued.length) break;
+                const merged = mergeQueued(queued);
+                if (!merged) continue;
+                await handleTurn(merged.message, client, merged.channel ?? channel, persona, false);
+            }
+        } finally {
+            pendingBatches.delete(key);
+            inflight.delete(key);
+        }
+    },
+} as Event;
+
+async function handleTurn(
+    message: Message,
+    client: CustomClient,
+    channel: Message['channel'],
+    persona: string | null,
+    checkCooldown: boolean,
+): Promise<void> {
+    if (checkCooldown) {
         const cooldownKey = `${message.author.id}:ai`;
         const now = Date.now();
         const expirationTime = client.cooldowns.get(cooldownKey);
         if (expirationTime && now < expirationTime) {
-            await safeReply(
-                message,
-                'Please slow down a bit — give me a few seconds before sending another message.',
-            );
+            await safeReply(message, cooldownLine());
             return;
         }
         client.cooldowns.set(cooldownKey, now + AI_COOLDOWN_MS);
+    }
 
-        try {
-            const response = await processMessage(message, persona, {
-                onThinking: () => startTyping(channel),
-            });
-            if (!response?.content) return;
+    try {
+        const response = await processMessage(message, persona, {
+            onThinking: () => startTyping(channel),
+        });
+        if (!response?.content) return;
 
-            const parts = splitMessage(response.content);
-            await safeReply(message, parts[0]!);
-            for (const part of parts.slice(1)) {
-                try {
-                    await channel.send(part);
-                } catch (err) {
-                    if (!isBenignSendError(err)) throw err;
-                    break;
-                }
+        // Tiny human jitter — stays snappy (300-900ms), just enough to feel typed.
+        await sleep(300 + Math.random() * 600);
+
+        const parts = splitBubbles(response.content).slice(0, 2);
+        await safeReply(message, parts[0]!);
+        for (const part of parts.slice(1)) {
+            await sleep(700 + Math.random() * 500);
+            try {
+                const sendable = channel as unknown as {
+                    isSendable?: () => boolean;
+                    send?: (content: string) => Promise<unknown>;
+                };
+                if (typeof sendable.isSendable === 'function' && !sendable.isSendable()) break;
+                if (typeof sendable.send !== 'function') break;
+                await sendable.send(part);
+            } catch (err) {
+                if (!isBenignSendError(err)) throw err;
+                break;
             }
-        } catch (err) {
-            if (!isBenignSendError(err)) console.error('Message processing error:', err);
         }
-    },
-} as Event;
+    } catch (err) {
+        if (!isBenignSendError(err)) console.error('Message processing error:', err);
+    }
+}

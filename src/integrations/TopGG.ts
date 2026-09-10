@@ -33,7 +33,6 @@ export const poststats = async (serverCount: number, shardCount?: number): Promi
         if (shardCount) stats.shardCount = shardCount;
 
         await apiInstance.postStats(stats);
-        console.log(`Successfully posted stats to Top.gg: ${serverCount} servers${shardCount ? `, ${shardCount} shards` : ''}`);
     } catch (error) {
         console.error("Failed to post bot stats to Top.gg:", error);
         throw error;

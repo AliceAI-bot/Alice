@@ -4,6 +4,9 @@ import type { RelationshipState } from '../utils/relationship.js';
 
 const SESSION_TTL_SECONDS = 3 * 60 * 60;
 const SESSION_MAX_MESSAGES = 30;
+// Only the tail is sent to the model; the head is covered by the rolling summary.
+export const SESSION_MODEL_WINDOW = 14;
+const SUMMARY_TTL_SECONDS = 3 * 60 * 60;
 
 const USER_TTL_SECONDS = 24 * 60 * 60;
 export const VOTE_FRESH_MS = 60 * 60 * 1000;
@@ -35,7 +38,51 @@ export async function getSession(key: string): Promise<SessionMessage[]> {
 }
 
 export async function resetSession(key: string): Promise<void> {
-    await redisClient.del(key);
+    await redisClient.del([key, summaryKey(key)]);
+}
+
+export interface SessionSummary {
+    text: string;
+    openLoops: string[];
+    updatedAt: number;
+    coveredUpTo: number;
+}
+
+export function summaryKey(sessionKeyValue: string): string {
+    return `${sessionKeyValue}:summary`;
+}
+
+function normalizeSummary(raw: unknown): SessionSummary | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const r = raw as Record<string, unknown>;
+    if (typeof r.text !== 'string' || !r.text.trim()) return null;
+    const openLoops = Array.isArray(r.openLoops)
+        ? r.openLoops.filter((x): x is string => typeof x === 'string' && Boolean(x.trim())).slice(0, 5)
+        : [];
+    return {
+        text: r.text.trim().slice(0, 1200),
+        openLoops,
+        updatedAt: typeof r.updatedAt === 'number' ? r.updatedAt : 0,
+        coveredUpTo: typeof r.coveredUpTo === 'number' ? r.coveredUpTo : 0,
+    };
+}
+
+export async function getSessionSummary(key: string): Promise<SessionSummary | null> {
+    try {
+        const raw = await redisClient.get(summaryKey(key));
+        if (!raw) return null;
+        return normalizeSummary(JSON.parse(raw));
+    } catch {
+        return null;
+    }
+}
+
+export async function saveSessionSummary(key: string, summary: SessionSummary): Promise<void> {
+    try {
+        await redisClient.set(summaryKey(key), JSON.stringify(summary), { EX: SUMMARY_TTL_SECONDS });
+    } catch {
+        // Summaries are best-effort; session still works without them.
+    }
 }
 
 export interface UserUsageState {

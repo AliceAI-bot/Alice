@@ -21,12 +21,13 @@
   "emojis": [
     { "name": "happy", "emoji": "<a:tap:1201983225933594717>" },
     { "name": "angry", "emoji": "<:Angy:1201982906289889360>" },
-    { "name": "wave", "emoji": "<a:emoji_1:1375804280996368434>" },
+    { "name": "wave", "emoji": "<a:wave~1:1547607234454757466>" },
     { "name": "scared", "emoji": "<a:scared:1201983290458775582>" },
     { "name": "confused", "emoji": "<a:confused_what:1201983094589239317>" },
     { "name": "excited", "emoji": "<a:excited:1201983173785813072>" },
     { "name": "joy", "emoji": "<a:happy:1256947075631808562>" },
     { "name": "eating", "emoji": "<:eating:1372320024873668668>" },
-    { "name": "dizzy", "emoji": "<a:dizzy_chinoko:1230832283095662643>" }
+    { "name": "dizzy", "emoji": "<a:dizzy_chinoko:1230832283095662643>" },
+    { "name": "wtf", "emoji": "<a:elainawtf:1547607310669586652>" }
   ]
 }

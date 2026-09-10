@@ -43,7 +43,14 @@ export const EMOTIONS = [
 
 export type Emotion = (typeof EMOTIONS)[number];
 
-export const TOOL_NAMES = ['web_search', 'dm_user', 'ignore_user'] as const;
+export const TOOL_NAMES = [
+    'web_search',
+    'dm_user',
+    'ignore_user',
+    'react_to_message',
+    'create_reminder',
+    'get_user_profile',
+] as const;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
 
@@ -58,6 +65,9 @@ export interface ToolRequest {
     target?: string;
     message?: string;
     action?: 'ignore' | 'unignore';
+    emoji?: string;
+    when?: string;
+    text?: string;
 }
 
 export function toolRequestArgs(req: ToolRequest): Record<string, unknown> {
@@ -66,6 +76,9 @@ export function toolRequestArgs(req: ToolRequest): Record<string, unknown> {
     if (req.target !== undefined) args.target = req.target;
     if (req.message !== undefined) args.message = req.message;
     if (req.action !== undefined) args.action = req.action;
+    if (req.emoji !== undefined) args.emoji = req.emoji;
+    if (req.when !== undefined) args.when = req.when;
+    if (req.text !== undefined) args.text = req.text;
     return args;
 }
 
@@ -103,9 +116,12 @@ export const ALICE_TURN_SCHEMA = {
             properties: {
                 name: { type: 'STRING', enum: [...TOOL_NAMES] },
                 query: { type: 'STRING', description: 'web_search ONLY: short, focused search query.' },
-                target: { type: 'STRING', description: 'dm_user / ignore_user ONLY: Discord mention (<@userID>) of the person being messaged or targeted. Omit to target the person you are currently talking to.' },
+                target: { type: 'STRING', description: 'dm_user / ignore_user / get_user_profile ONLY: Discord mention (<@userID>). Omit to target the person you are currently talking to.' },
                 message: { type: 'STRING', description: 'dm_user ONLY: the private message to send, in your own voice.' },
                 action: { type: 'STRING', enum: ['ignore', 'unignore'], description: 'ignore_user ONLY: your own call — ignore stops your replies to them for ~24h, unignore allows replies again.' },
+                emoji: { type: 'STRING', description: 'react_to_message ONLY: one emoji (❤️ 😂 🫂 😭 💀). ALMOST NEVER — <1% of turns, only genuinely big moments. Default to not using.' },
+                when: { type: 'STRING', description: 'create_reminder ONLY: their timing verbatim, like "in 10m", "in 1h30m", "tomorrow at 9am", "at 5pm" JST (1m–7d).' },
+                text: { type: 'STRING', description: 'create_reminder ONLY: what to remind them about, short.' },
             },
             required: ['name'],
         },
@@ -135,6 +151,9 @@ function parseToolCall(raw: unknown): ToolRequest | null {
     if (typeof o.target === 'string' && o.target.trim()) req.target = o.target.trim();
     if (typeof o.message === 'string') req.message = o.message;
     if (o.action === 'ignore' || o.action === 'unignore') req.action = o.action;
+    if (typeof o.emoji === 'string' && o.emoji.trim()) req.emoji = o.emoji.trim();
+    if (typeof o.when === 'string' && o.when.trim()) req.when = o.when.trim();
+    if (typeof o.text === 'string' && o.text.trim()) req.text = o.text.trim();
     return req;
 }
 

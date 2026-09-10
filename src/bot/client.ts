@@ -45,15 +45,6 @@ export class CustomClient extends Client {
                 if (expiry <= now) this.cooldowns.delete(key);
             }
         }, 60 * 60 * 1000).unref();
-
-        setInterval(() => {
-            const m = process.memoryUsage();
-            const mb = (n: number) => `${(n / 1024 / 1024).toFixed(0)}MB`;
-            console.log(
-                `[mem] cluster=${this.cluster?.id ?? '?'} rss=${mb(m.rss)} heapUsed=${mb(m.heapUsed)} ` +
-                    `heapTotal=${mb(m.heapTotal)} external=${mb(m.external)}`,
-            );
-        }, 5 * 60 * 1000).unref();
     }
 } 
 
@@ -233,21 +224,70 @@ async function updatePresence(manager: ClusterManager, topGGToken: string | null
         }
 
         await manager.broadcastEval(
-            (client, { guilds, users }) => {
+            (client, { users }) => {
                 if (!client.user) return;
                 client.user.setPresence({
                     activities: [{
-                        name: `Connected with ${users} souls across ${guilds} realms.`,
+                        name: `with ${users} souls 🌙`,
                         type: 4,
                     }],
-                    status: "dnd",
+                    status: "online",
                 });
             },
-            { context: { guilds: totalGuilds, users: totalUsers } }
+            { context: { users: totalUsers } }
         );
+        startPresenceRotation(manager);
     } catch (error) {
         console.error("Presence update failed:", error);
     }
+}
+
+function presenceForNow(): { name: string; status: "online" | "idle" } {
+    let hour = new Date().getHours();
+    try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            hour: 'numeric',
+            hour12: false,
+            timeZone: 'Asia/Tokyo',
+        }).formatToParts(new Date());
+        const h = parts.find((p) => p.type === 'hour')?.value;
+        if (h !== undefined) hour = Number.parseInt(h, 10) % 24;
+    } catch {
+        // fall back to local hour
+    }
+    const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)]!;
+    if (hour >= 2 && hour < 5) return { name: pick(['insomnia club 🌙', 'up too late lol', 'zzz... maybe']), status: 'idle' };
+    if (hour >= 5 && hour < 11) return { name: pick(['morninggg ☀️', 'coffee + luna 🐈‍⬛', 'touching grass early']), status: 'online' };
+    if (hour >= 11 && hour < 17) return { name: pick(['touching grass 🌱', 'with Luna 🐈‍⬛', 'ur local tokyo girl']), status: 'online' };
+    if (hour >= 17 && hour < 22) return { name: pick(['golden hour 🌆', 'with Luna 🐈‍⬛', 'yapping hour']), status: 'online' };
+    return { name: pick(['late-night convos 🌙', 'overthinking lol', 'up w luna 🐈‍⬛']), status: 'online' };
+}
+
+let presenceTimer: NodeJS.Timeout | null = null;
+
+function startPresenceRotation(manager: ClusterManager): void {
+    if (presenceTimer) return;
+    const rotate = async () => {
+        try {
+            const { name, status } = presenceForNow();
+            await manager.broadcastEval(
+                (client, ctx) => {
+                    if (!client.user) return;
+                    client.user.setPresence({
+                        activities: [{ name: (ctx as { name: string }).name, type: 4 }],
+                        status: (ctx as { status: 'online' | 'idle' }).status,
+                    });
+                },
+                { context: { name, status } },
+            );
+        } catch (error) {
+            console.error('Presence rotation failed:', error);
+        }
+    };
+    // First rotation after 20m so the stats presence gets some screen time, then every 45m.
+    presenceTimer = setInterval(() => void rotate(), 45 * 60 * 1000);
+    presenceTimer.unref?.();
+    setTimeout(() => void rotate(), 20 * 60 * 1000).unref?.();
 }
 
 // ballz

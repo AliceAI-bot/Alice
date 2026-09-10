@@ -1,29 +1,9 @@
 import { Users } from '../../db/database.js';
 import { applyEmojis } from '../../utils/emojis.js';
 import type { ToolContext } from '../../types/ai.js';
+import { resolveToolTargetId } from './target.js';
 
 export const DM_TOOL = 'dm_user';
-
-const TARGET_RE = /<@!?(\d+)>/;
-
-function extractId(target: unknown): string | null {
-    if (typeof target !== 'string') return null;
-    const match = target.match(TARGET_RE);
-    if (match?.[1]) return match[1];
-    if (/^\d{10,25}$/.test(target.trim())) return target.trim();
-    return null;
-}
-
-function resolveTargetId(ctx: ToolContext, args: Record<string, unknown>): string | null {
-    const fromArg = extractId(args.target);
-    if (fromArg) return fromArg;
-
-    const mentioned = ctx.message.mentions.users.filter((u) => u.id !== ctx.requesterId && !u.bot);
-    const first = mentioned.first();
-    if (first) return first.id;
-
-    return null;
-}
 
 async function sendDm(ctx: ToolContext, targetId: string, content: string): Promise<string> {
     try {
@@ -39,7 +19,7 @@ export async function executeDm(ctx: ToolContext, args: Record<string, unknown>)
     const content = typeof args.message === 'string' && args.message.trim() ? args.message.trim() : '';
     if (!content) return "Alice can't send an empty DM.";
 
-    const targetId = resolveTargetId(ctx, args) ?? ctx.requesterId;
+    const targetId = resolveToolTargetId(ctx, args);
 
     if (targetId === ctx.requesterId) {
         return sendDm(ctx, ctx.requesterId, content);
