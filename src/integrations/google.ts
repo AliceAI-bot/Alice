@@ -3,9 +3,9 @@ import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import type { Content, GenerateContentConfig, GenerateContentResponse } from '@google/genai';
 import { AiError, AiMessage } from '../types/ai.js';
 
-export const DEFAULT_MODEL = 'gemma-4-31b-it';
+export const DEFAULT_MODEL = 'gemma-4-26b-a4b-it';
 export const DEFAULT_TEMPERATURE = 0.9;
-const THINKING_LEVEL = ThinkingLevel.MINIMAL;
+const THINKING_LEVEL = ThinkingLevel.HIGH;
 
 const MAX_ATTEMPTS = 4;
 

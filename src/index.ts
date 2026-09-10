@@ -12,6 +12,6 @@ const topGGToken = loadEnv('DBL_Token') || null;
 startManager({
     token,
     mainFile: './dist/src/bot/index.js',
-    shardsPerClusters: 6,
+    shardsPerClusters: 4,
     topGGToken,
 });

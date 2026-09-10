@@ -71,6 +71,7 @@ export default {
     async execute(message: Message, client: CustomClient): Promise<void> {
         if (!message.author || message.author.bot || message.system) return;
         if (message.author.id === client.user?.id) return;
+        if (message.content.startsWith(',')) return;
         let channel = message.channel;
         if (!channel) {
             const fetched = await client.channels.fetch(message.channelId).catch(() => null);

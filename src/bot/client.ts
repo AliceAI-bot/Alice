@@ -55,7 +55,7 @@ export class CustomClient extends Client {
             );
         }, 5 * 60 * 1000).unref();
     }
-}
+} 
 
 export async function createClient(): Promise<CustomClient> {
     const info = getInfo();
@@ -124,7 +124,7 @@ export async function startManager(options: ManagerOptions): Promise<void> {
     const {
         token,
         mainFile,
-        shardsPerClusters = 5,
+        shardsPerClusters = 4,
         topGGToken = null,
     } = options;
 
