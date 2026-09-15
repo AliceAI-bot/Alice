@@ -41,10 +41,7 @@ async function queryTopggVote(userId: string): Promise<boolean | null> {
     if (now < failingUntil) return null;
 
     const token = loadEnv('DBL_Token');
-    if (!token) {
-        console.warn('[votes] DBL_Token missing — treating as not voted');
-        return false;
-    }
+    if (!token) return false;
 
     // v1 requires the Bearer prefix.
     const auth = token.startsWith('Bearer ') ? token : `Bearer ${token}`;

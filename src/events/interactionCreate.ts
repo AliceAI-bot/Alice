@@ -37,10 +37,7 @@ export default {
         if (!interaction.isChatInputCommand()) return;
 
         const command = client.slashCommands.get(interaction.commandName) as Command | undefined;
-        if (!command) {
-            console.warn(`No command: ${interaction.commandName}`);
-            return;
-        }
+        if (!command) return;
 
         // One cached read covers ToS acceptance + blacklist status + reason.
         const gate = await Users.getGateData(interaction.user.id);

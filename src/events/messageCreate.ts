@@ -108,20 +108,25 @@ function splitHard(content: string): string[] {
 }
 
 /**
- * Human texting split: model output should already be 1-2 sentences, so the
- * common case stays one bubble. Longer stories split into max 2 bubbles at a
- * sentence boundary (~middle), never into 5 robotic chunks.
+ * Human texting split: 1 bubble by default. A blank line is an explicit
+ * model-authored break -> 2 bubbles max. Never more than 2.
  */
 function splitBubbles(content: string): string[] {
-    const text = content.trim();
+    const text = content.replace(/\r\n/g, '\n').trim();
     if (!text) return [];
+    // Model-authored break wins over every heuristic below.
+    const authored = text.indexOf('\n\n');
+    if (authored > 0 && authored < text.length - 2) {
+        const parts = [text.slice(0, authored).trim(), text.slice(authored + 2).trim()].filter(Boolean);
+        if (parts.length === 2) return parts.flatMap(splitHard).slice(0, 2);
+    }
     if (text.length <= 280) return splitHard(text);
     if (text.length > DISCORD_MESSAGE_LIMIT) return splitHard(text);
 
     // Prefer a paragraph break, else a sentence boundary near the middle.
     const para = text.indexOf('\n\n');
     if (para > 60 && para < text.length - 60) {
-        return [text.slice(0, para).trim(), text.slice(para).trim()].flatMap(splitHard);
+        return [text.slice(0, para).trim(), text.slice(para + 2).trim()].flatMap(splitHard);
     }
     const mid = Math.floor(text.length / 2);
     let best = -1;

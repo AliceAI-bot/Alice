@@ -2,7 +2,7 @@ import type { ToolContext } from '../../types/ai.js';
 
 export const REACT_TOOL = 'react_to_message';
 
-/** Tool-only path (no ambient auto-reactions) — model-chosen reactions must stay ultra-rare and safe. */
+/** Tool-only path (no ambient auto-reactions) — model-chosen reactions stay rare (~3-5%) and safe. */
 export const REACT_ALLOWLIST = ['❤️', '😂', '🫂', '😭', '💀'] as const;
 
 export function isAllowedReaction(emoji: unknown): emoji is string {

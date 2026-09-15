@@ -2,11 +2,11 @@ import redisClient from '../integrations/redis.js';
 import { normalizeRelationship } from '../utils/relationship.js';
 import type { RelationshipState } from '../utils/relationship.js';
 
-const SESSION_TTL_SECONDS = 3 * 60 * 60;
-const SESSION_MAX_MESSAGES = 30;
+export const SESSION_TTL_SECONDS = 3 * 60 * 60;
+export const SESSION_MAX_MESSAGES = 30;
 // Only the tail is sent to the model; the head is covered by the rolling summary.
 export const SESSION_MODEL_WINDOW = 14;
-const SUMMARY_TTL_SECONDS = 3 * 60 * 60;
+export const SUMMARY_TTL_SECONDS = 3 * 60 * 60;
 
 const USER_TTL_SECONDS = 24 * 60 * 60;
 export const VOTE_FRESH_MS = 60 * 60 * 1000;
@@ -189,8 +189,25 @@ export async function persistTurn(
     for (const msg of messages) tx.rPush(key, JSON.stringify(msg));
     tx.lTrim(key, -SESSION_MAX_MESSAGES, -1);
     tx.expire(key, SESSION_TTL_SECONDS);
+    tx.expire(summaryKey(key), SUMMARY_TTL_SECONDS);
     tx.set(userKey(userId), JSON.stringify(state), { EX: USER_TTL_SECONDS });
     await tx.exec();
+}
+
+/**
+ * After a successful roll-up at 30 msgs: drop the already-summarized head,
+ * keep only the live tail. Old texts are gone; summary carries them forward.
+ */
+export async function trimSessionToTail(key: string, keepLast: number): Promise<void> {
+    try {
+        await redisClient.lTrim(key, -keepLast, -1);
+        const tx = redisClient.multi();
+        tx.expire(key, SESSION_TTL_SECONDS);
+        tx.expire(summaryKey(key), SUMMARY_TTL_SECONDS);
+        await tx.exec();
+    } catch {
+        // Best-effort: session still works even if trim stalls; next cycle retries.
+    }
 }
 
 const IGNORED_PREFIX = 'ignored:';

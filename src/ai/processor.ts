@@ -10,13 +10,15 @@ import {
     persistTurn,
     saveSessionSummary,
     sessionKey,
+    trimSessionToTail,
     usageToday,
     VOTE_FRESH_MS,
+    SESSION_MAX_MESSAGES,
     SESSION_MODEL_WINDOW,
 } from '../db/redisStore.js';
 import type { SessionMessage, SessionSummary } from '../db/redisStore.js';
 import { RELATIONSHIP_CONFIG } from '../config/relationshipConfig.js';
-import { applyEmojis } from '../utils/emojis.js';
+import { applyEmojis, sanitizeForHistory } from '../utils/emojis.js';
 import {
     applyMonthlyDecay,
     buildMoodLine,
@@ -38,6 +40,7 @@ import {
     ToolContext,
 } from '../types/ai.js';
 import type { AliceTurn } from '../types/ai.js';
+import { ThinkingLevel } from '@google/genai';
 import { chat } from '../integrations/google.js';
 import { refreshVote } from '../utils/voterCheck.js';
 import type { UserVoteState } from '../db/redisStore.js';
@@ -46,7 +49,6 @@ import { DM_TOOL, executeDm } from './tools/dm.js';
 import { IGNORE_TOOL, executeIgnore } from './tools/ignore.js';
 import { WEB_SEARCH_TOOL, executeWebSearch } from './tools/webSearch.js';
 import { REACT_TOOL, executeReact } from './tools/react.js';
-import { REMIND_TOOL, executeRemind } from './tools/remind.js';
 import { PROFILE_TOOL, executeProfile } from './tools/profile.js';
 import { busyLine, quotaLine } from './voiceLines.js';
 
@@ -67,20 +69,45 @@ const TOOLS_PATH = 'src/ai/instructions/tools.txt';
 
 const TURN_CONTRACT = `
 # Output Contract
-Respond with exactly one JSON object and nothing else:
+Respond with exactly one JSON object, nothing else:
 {"message": string, "emotion": string, "relationship_delta": integer, "memory_action": object|null, "tool_call": object|null}
 
-- message: your reply as Alice, in your own voice. Empty string ONLY when tool_call is set.
-- emotion: how you feel right now — one of: neutral, happy, amused, affectionate, flirty, sad, annoyed, angry, surprised, worried.
-- relationship_delta: -3..+3 for how strongly this interaction moves your bond (+3 major warmth or joy, -3 real hurt or betrayal, 0 for neutral smalltalk). Judge intent, not just words.
-- memory_action: set to {"action":"remember","text":"..."} to store one durable fact about the user worth recalling later (preferences, life events, names; one sentence, never secrets), or {"action":"forget","text":"..."} with the exact existing memory to drop. null otherwise.
-- tool_call: set to {"name":..., "query":..., "target":..., "message":..., "action":..., "emoji":..., "when":..., "text":...} to run a tool INSTEAD of replying (fields per the Tools section; include ONLY what that tool needs); null once you have its result or don't need one.`;
+- message: reply as Alice. Empty ONLY when tool_call is set. Conversation = messages below. When asked what we're talking about / what was said / do you remember: answer factually from messages below first — never say forgot/blanking when history shows it. If you previously said you forgot, correct yourself now. Durable Memories block is separate long-term facts. Explicit recall overrides cute — fact first, then cute. Never repeat apologies across turns — answer instead.
+- Never repeat: never resend same/near-same wording as your last 2-3 turns. If re-asked, acknowledge (told you lol) + add one new beat.
+- Bubbles: rare, default 1 bubble. Blank line (\\n\\n) = 2 bubbles max, ONLY on explicit ask or genuinely long reply. Greeting + question stays one bubble. No blank line = 1 bubble.
+- Emoji: most messages include exactly one [happy/angry/wave/scared/confused/excited/joy/eating/dizzy/wtf]. Max one per turn (second bubble gets none). Never Unicode emoji in message. [tag] = message only, Unicode = react tool only, never swap.
+- Substance: asked to explain/teach/tell more → real content first (brevity lifted), never deflection without content. Image attached → look at it and answer from what you see; never claim blind. Image failed to load → say so once, ask for re-upload.
+- emotion: neutral, happy, amused, affectionate, flirty, sad, annoyed, angry, surprised, worried.
+- relationship_delta: -3..+3 bond shift, 0 = smalltalk. Judge intent.
+- memory_action: {"action":"remember","text":"..."} for one durable fact (if user says "remember X", MUST emit), {"action":"forget","text":"..."} for exact drop, else null.
+- tool_call: {"name":..., "query":..., "target":..., "message":..., "action":..., "emoji":...} with ONLY that tool's fields, INSTEAD of replying; null when done/unneeded.`;
 
 const MEMORY_MAX_CHARS = 160;
 const MEMORY_MAX_SLOTS = 30;
 
 const MAX_IMAGES = 2;
-const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+function mimeFromFileName(name: string): string {
+    const ext = name.split('.').pop()?.toLowerCase();
+    switch (ext) {
+        case 'jpg':
+        case 'jpeg':
+            return 'image/jpeg';
+        case 'png':
+            return 'image/png';
+        case 'webp':
+            return 'image/webp';
+        case 'gif':
+            return 'image/gif';
+        case 'bmp':
+            return 'image/bmp';
+        case 'avif':
+            return 'image/avif';
+        default:
+            return 'image/png';
+    }
+}
 
 const fileCache = new Map<string, string>();
 
@@ -101,12 +128,6 @@ function loadPromptFile(relativePath: string): string {
 }
 
 const staticPromptCache = new Map<string, string>();
-
-/** Dev/test hook: pick up persona edits without a full restart. */
-export function clearPromptCache(): void {
-    fileCache.clear();
-    staticPromptCache.clear();
-}
 
 function buildStaticSystemPrompt(personaName: string): string {
     const cached = staticPromptCache.get(personaName);
@@ -139,26 +160,20 @@ function buildContextSystemPrompt(opts: {
         '{user}',
         opts.userName,
     );
-    const nowLine = `Right now: ${formatTokyoNow(new Date(opts.now))}.`;
+    const nowLine = `${formatTokyoNow(new Date(opts.now))}.`;
     const gapLine =
         opts.lastInteractionAt == null
-            ? `You've never talked to ${opts.userName} before — this is a first meeting.`
-            : `Last talked to ${opts.userName}: ${formatTimeGap(opts.now - opts.lastInteractionAt)}.${
-                  opts.now - opts.lastInteractionAt > 3 * 24 * 60 * 60 * 1000
-                      ? ' Long time no see energy is natural.'
-                      : ''
-              }`;
+            ? `First meeting ${opts.userName}.`
+            : `Last: ${formatTimeGap(opts.now - opts.lastInteractionAt)}.${opts.now - opts.lastInteractionAt > 3 * 24 * 60 * 60 * 1000 ? ' Long time.' : ''}`;
     const moodLine = buildMoodLine(opts.lastEmotion, opts.lastInteractionAt, opts.now);
-    const changedLine = opts.statusJustChanged
-        ? 'Your bond just shifted — show it subtly in warmth/distance, never announce the label.'
-        : '';
+    const changedLine = opts.statusJustChanged ? 'Bond just shifted — show it, never announce it.' : '';
     const memoryBlock = opts.memories.length
-        ? `# Memories about ${opts.userName}\n${opts.memories.map((m) => `- ${m}`).join('\n')}\n(drop them in casually when relevant, never recite the list)`
+        ? `# Memories ${opts.userName}\n${opts.memories.map((m) => `- ${m}`).join('\n')}\n(use casually; quote only if asked)`
         : '';
     const summaryBlock = opts.summary?.text
-        ? `# Earlier in this chat\n${opts.summary.text}${
+        ? `# Earlier\n${opts.summary.text}${
               opts.summary.openLoops.length
-                  ? `\nOpen loops (follow up naturally sometime, don't force):\n${opts.summary.openLoops.map((l) => `- ${l}`).join('\n')}`
+                  ? `\nLoops (follow up sometime, don't force):\n${opts.summary.openLoops.map((l) => `- ${l}`).join('\n')}`
                   : ''
           }`
         : '';
@@ -234,7 +249,7 @@ async function converse(
             console.warn('[ai] Tool budget exhausted; requesting direct reply.');
             messages.push({
                 role: 'user',
-                content: '[system] Tools are unavailable right now. Respond NOW in message without setting tool_call.',
+                content: '[system] Tools off. Reply in message now.',
             });
             const finalRes = await askAlice(system, messages, apiKey, images);
             return { turn: { ...finalRes.turn, toolCall: null }, thinking: finalRes.thinking, toolsUsed };
@@ -285,14 +300,28 @@ async function generate(
     }
 }
 
+/** Strip a leading bot mention so history stays clean (`<@id> hi` -> `hi`). */
+function stripBotMention(raw: string, botId?: string | null): string {
+    let text = (raw ?? '').trim();
+    if (!text) return text;
+    if (botId) {
+        const mentionRe = new RegExp(`^\\s*<@!?${botId}>\\s*`);
+        text = text.replace(mentionRe, '').trim();
+    }
+    // Fallback: strip any leading mention-like token if bot id unknown.
+    if (!botId) text = text.replace(/^\s*<@!?\d+>\s*/, '').trim();
+    return text;
+}
+
 /**
- * Rolling append-merge summary (fire-and-forget, never blocks replies).
- * The stored summary is cumulative: each run merges the PRIOR summary with only
- * the newly-uncovered head, then overwrites — so detail compounds across 30-msg
- * cycles without growing tokens (text capped, tail window stays 14).
+ * Rolling append-only summary (fire-and-forget, never blocks replies).
+ * Desired behavior: shared channel holds max 30 msgs. When it hits 30, we
+ * summarize ONLY the old head (oldest len-14), delete those texts from Redis
+ * (keep live tail 14), and APPEND the new chunk to the existing summary.
+ * The prior summary is never re-summarized — it is preserved verbatim.
  */
-const SUMMARY_TRIGGER_LEN = 28;
-const SUMMARY_MAX_TEXT = 900;
+const SUMMARY_TRIGGER_LEN = SESSION_MAX_MESSAGES;
+const SUMMARY_MAX_TEXT = 1200;
 
 function parseSummarySections(text: string): { facts: string[]; vibe: string; loops: string[] } {
     const facts: string[] = [];
@@ -334,42 +363,56 @@ async function maybeSummarize(
 ): Promise<void> {
     try {
         if (fullSession.length < SUMMARY_TRIGGER_LEN) return;
+        // Old head only — never the prior summary. Tail stays live in Redis.
         const head = fullSession.slice(0, fullSession.length - SESSION_MODEL_WINDOW);
         if (head.length < 8) return;
-        // Only feed messages we haven't covered yet — the prior summary holds the rest.
+        // Skip anything already covered (crash/race safety) — watermark only moves forward.
         const coveredUpTo = existing?.coveredUpTo ?? 0;
         const fresh = head.filter((m) => m.ts > coveredUpTo);
-        if (fresh.length < 8) return;
+        if (fresh.length < 8) {
+            // Still trim already-covered head so the list can't stick at 30 forever.
+            if (head.length >= fullSession.length - SESSION_MODEL_WINDOW) {
+                await trimSessionToTail(key, SESSION_MODEL_WINDOW);
+            }
+            return;
+        }
 
         const transcript = fresh
             .map((m) => `${m.username}: ${m.content}`.slice(0, 280))
             .join('\n')
             .slice(0, 4500);
-        const prior = existing?.text
-            ? `Prior cumulative summary (keep its specifics, merge don't duplicate):\n${existing.text}\nPrior loops: ${(existing.openLoops ?? []).join(' | ')}\n\n`
-            : '';
         const { text } = await chat({
-            system: 'Summarize this Discord chat excerpt for a roleplay companion\'s memory. Merge with the prior summary — keep names, dates, plans, feelings, conflicts. Reply EXACTLY:\nFACTS:\n- ... (up to 5, specific)\nVIBE: ... (1 line: mood, tension, repair state)\nLOOPS:\n- ... (up to 3 open threads worth following up on)',
-            messages: [{ role: 'user', content: `${prior}New messages:\n${transcript}` }],
+            system: 'Summarize this chat excerpt, no inventing. Reply EXACTLY:\nFACTS:\n- ... (up to 5)\nVIBE: ... (1 line)\nLOOPS:\n- ... (up to 3)',
+            messages: [{ role: 'user', content: `Summarize:\n${transcript}` }],
             temperature: 0.3,
-            maxTokens: 450,
+            maxTokens: 300,
+            thinking: ThinkingLevel.MINIMAL,
             ...(byokKey ? { apiKey: byokKey } : {}),
         });
         const { facts, vibe, loops } = parseSummarySections(text);
         if (!facts.length && !vibe) return;
-        const mergedText = [
+        const chunk = [
             facts.length ? `FACTS:\n${facts.map((f) => `- ${f}`).join('\n')}` : '',
             vibe ? `VIBE: ${vibe}` : '',
         ]
             .filter(Boolean)
-            .join('\n')
-            .slice(0, SUMMARY_MAX_TEXT);
+            .join('\n');
+        // Append-only: preserve prior summary verbatim, add new chunk, cap tail.
+        const base = existing?.text?.trim() ?? '';
+        const appended = base ? `${base}\n---\n${chunk}` : chunk;
+        const capped =
+            appended.length <= SUMMARY_MAX_TEXT
+                ? appended
+                : appended.slice(appended.length - SUMMARY_MAX_TEXT);
+        const mergedLoops = [...(existing?.openLoops ?? []), ...loops].slice(-5);
         await saveSessionSummary(key, {
-            text: mergedText,
-            openLoops: loops,
+            text: capped,
+            openLoops: mergedLoops,
             updatedAt: Date.now(),
             coveredUpTo: head[head.length - 1]?.ts ?? Date.now(),
         });
+        // Delete old texts from Redis — summary now carries them. Keep live tail.
+        await trimSessionToTail(key, SESSION_MODEL_WINDOW);
     } catch (err) {
         console.warn('[ai] background summary failed:', err instanceof Error ? err.message : err);
     }
@@ -409,9 +452,15 @@ async function collectImages(message: Message): Promise<ChatImage[]> {
         if (eligible.length >= MAX_IMAGES) break;
 
         const type = attachment.contentType ?? '';
-        if (!type.startsWith('image/') || attachment.size > MAX_IMAGE_BYTES) continue;
+        const name = typeof attachment.name === 'string' ? attachment.name : '';
+        const looksImage =
+            type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(name);
+        if (!looksImage || attachment.size > MAX_IMAGE_BYTES) continue;
 
-        eligible.push({ mimeType: type, url: attachment.url });
+        eligible.push({
+            mimeType: type.startsWith('image/') ? type : mimeFromFileName(name),
+            url: attachment.url,
+        });
     }
 
     const results = await Promise.allSettled(
@@ -443,7 +492,10 @@ async function handleProcess(
     const byokKey = user.byokKey?.startsWith('AIza') ? user.byokKey : undefined;
     const isByok = Boolean(byokKey);
 
-    const content = message.content;
+    const botId = message.client.user?.id ?? null;
+    const rawContent = message.content ?? '';
+    const content = stripBotMention(rawContent, botId) || rawContent.trim();
+    if (!content) return null;
 
     let rel: RelationshipState;
     let decayed = false;
@@ -516,23 +568,30 @@ async function handleProcess(
         .filter((part) => part !== '')
         .join('\n\n');
 
-    // Send only the tail + summary: cuts input tokens ~50% on busy channels, same memory feel.
-    const tail = session.slice(-SESSION_MODEL_WINDOW);
+    // Shared channel: full group context. Summary (if any) lives once in the
+    // system prompt; here we send the whole stored session (max 30 rows) with
+    // speaker attribution so nothing asked-about is ever invisible. Rows are
+    // truncated for model input only — Redis keeps full text. (A tail-only
+    // window here created a blind spot: rows older than the last 14 were
+    // neither sent nor summarized until the 30-row roll-up deleted them.)
+    const MODEL_ROW_CAP = 500;
     const messages: AiMessage[] = [];
-    if (summary?.text && session.length > SESSION_MODEL_WINDOW) {
-        messages.push({
-            role: 'user',
-            content: `[system — earlier in this chat, not a user message]: ${summary.text}`,
-        });
-    }
-    for (const m of tail) {
+    for (const m of session) {
+        const safeContent = (m.content ?? '').trim().slice(0, MODEL_ROW_CAP);
+        if (!safeContent) continue;
+        const safeName = (m.username ?? 'user').trim() || 'user';
         messages.push(
             m.role === 'assistant'
-                ? { role: 'assistant', content: m.content }
-                : { role: 'user', content: `${m.username}: ${m.content}` },
+                ? { role: 'assistant', content: `${safeName}: ${safeContent}` }
+                : { role: 'user', content: `${safeName}: ${safeContent}` },
         );
     }
-    messages.push({ role: 'user', content });
+    const imageCue = images.length
+        ? '\n[image attached — look at it and answer from what you see]'
+        : message.attachments.size
+          ? '\n[image failed to load — say so plainly once, ask for re-upload]'
+          : '';
+    messages.push({ role: 'user', content: `${author.username}: ${content}${imageCue}` });
 
     const executor: AiToolExecutor = (name, args) => {
         const ctx: ToolContext = { message, requesterId: userId };
@@ -540,7 +599,6 @@ async function handleProcess(
         if (name === IGNORE_TOOL) return executeIgnore(ctx, args);
         if (name === WEB_SEARCH_TOOL) return executeWebSearch(args.query, byokKey);
         if (name === REACT_TOOL) return executeReact(ctx, args);
-        if (name === REMIND_TOOL) return executeRemind(ctx, args);
         if (name === PROFILE_TOOL) return executeProfile(ctx, args);
         throw new Error(`Unknown tool: ${name}`);
     };
@@ -590,6 +648,9 @@ async function handleProcess(
     const memoriesChanged = memories !== user.memories;
 
     const botUser = message.client.user;
+    // Store history sanitized (invented tags stripped, known [tags] kept raw)
+    // so junk markup never pollutes future recall. Delivery stays rendered.
+    const historyReply = sanitizeForHistory(reply);
     const writes: Promise<unknown>[] = [
         relationshipChanged
             ? Users.saveInteraction(userId, user, rel, memoriesChanged ? memories : undefined)
@@ -602,7 +663,7 @@ async function handleProcess(
                     role: 'assistant',
                     authorId: botUser?.id ?? 'alice',
                     username: botUser?.username ?? 'Alice',
-                    content: reply,
+                    content: historyReply,
                     ts: Date.now(),
                 },
             ],
@@ -627,10 +688,10 @@ async function handleProcess(
             role: 'assistant' as const,
             authorId: botUser?.id ?? 'alice',
             username: botUser?.username ?? 'Alice',
-            content: reply,
+            content: historyReply,
             ts: Date.now(),
         },
-    ].slice(-30);
+    ].slice(-SESSION_MAX_MESSAGES);
     void maybeSummarize(key, grown, summary, byokKey);
     return { content: applyEmojis(reply), emotion: turn.emotion, degraded, toolsUsed };
 }

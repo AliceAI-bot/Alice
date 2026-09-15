@@ -106,18 +106,12 @@ export function applyMonthlyDecay(
 }
 
 const STATUS_CONTEXT: Record<RelationshipStatus, string> = {
-    stranger:
-        'You and {user} are strangers. Keep a little distance — polite but not warm yet, no pet names, no inside jokes. Earn closeness, don\'t assume it.',
-    friend:
-        'You and {user} are friends. Relaxed and approachable, light teasing ok, occasional hype. Friendly, not clingy.',
-    close_friend:
-        'You and {user} are close friends. Comfortable and trusting — you can be honest, roast a little, remember small things, check in for real.',
-    bestie:
-        'You and {user} are besties. High familiarity, playful chaos, inside-joke energy. You notice their mood fast and call it out gently.',
-    enemy:
-        'You and {user} are on bad terms. Guarded, dry, short. Don\'t fawn, don\'t start fights either — they have to earn their way back.',
-    lovers:
-        'You and {user} are lovers. Warm, soft, a little clingy-cute. Affectionate but still you — teasing, jealous-pouty, real, never soppy-essay.',
+    stranger: 'Strangers with {user}: polite distance, no pet names/jokes.',
+    friend: 'Friends with {user}: relaxed, light tease, not clingy.',
+    close_friend: 'Close with {user}: honest, roast a little, check in real.',
+    bestie: 'Besties with {user}: playful, notice mood fast.',
+    enemy: 'Bad terms with {user}: guarded, dry, short. No fawning/fights.',
+    lovers: 'Lovers with {user}: warm, soft, clingy-cute but still you.',
 };
 
 export function affectionBand(affection: number): string {
@@ -133,7 +127,7 @@ export function affectionBand(affection: number): string {
 export function buildRelationshipContext(status: RelationshipStatus, affection?: number): string {
     const base = STATUS_CONTEXT[status] ?? STATUS_CONTEXT.stranger!;
     if (typeof affection === 'number' && Number.isFinite(affection)) {
-        return `${base} Bond: ${affectionBand(affection)} (${Math.round(affection)}/100).`;
+        return `${base} (${Math.round(affection)}).`;
     }
     return base;
 }
@@ -212,10 +206,8 @@ export function buildMoodLine(
 ): string {
     if (!lastEmotion) return '';
     if (lastEmotion === 'neutral') return '';
-    if (lastInteractionAt == null) return `You were feeling ${lastEmotion} recently — carry it lightly unless they changed the vibe.`;
+    if (lastInteractionAt == null) return `Still a bit ${lastEmotion} — carry lightly.`;
     const idle = now - lastInteractionAt;
-    if (idle < 15 * 60 * 1000) return `You're still feeling ${lastEmotion} from a moment ago — don't snap-reset unless they changed the vibe.`;
-    if (idle < 2 * 60 * 60 * 1000) return `A little ${lastEmotion} is still lingering — soften it unless they keep the same energy.`;
-    if (idle < 12 * 60 * 60 * 1000) return `Faint echo of feeling ${lastEmotion} earlier — mostly fresh now.`;
+    if (idle < 2 * 60 * 60 * 1000) return `Still ${lastEmotion} — don't snap-reset unless vibe changed.`;
     return '';
 }

@@ -16,14 +16,14 @@ function getCache(): EmojiCache {
         const source = entries
             .map((entry) => entry.name.replace(RE_SPECIAL, '\\$&'))
             .join('|');
-        // Single pass: existing custom-emoji markup passes through untouched
-        // (it literally contains a ":name:" substring), known [name] / :name:
-        // resolve, and anything unknown ([wry], :wry:) is stripped so invented
-        // tags never leak into chat. Known alternatives come first so they win.
+        // Single pass: existing custom-emoji markup passes through untouched.
+        // Known [name] / :name: resolve (colon form allows underscores so
+        // :confused_what: can't bypass as invented). Unknown ([wry],
+        // :wry:, :foo_bar:) is stripped so invented tags never leak.
         cache = {
             map,
             tagRe: new RegExp(
-                `(<a?:\\w+:\\d+>)|\\[(${source})\\](?!\\s*\\()|:(${source}):|\\[[A-Za-z0-9_+/-]+\\](?!\\s*\\()|:([A-Za-z]{2,}):`,
+                `(<a?:\\w+:\\d+>)|\\[(${source})\\](?!\\s*\\()|:(${source}):|\\[[A-Za-z0-9_+/-]+\\](?!\\s*\\()|:([A-Za-z0-9_]{2,}):`,
                 'gi',
             ),
         };
@@ -42,6 +42,22 @@ export function applyEmojis(text: string): string {
             const name = (bracket ?? colon ?? '').toLowerCase();
             if (name) return map.get(name) ?? tag;
             // Unknown [tag] / :tag: — strip it.
+            return '';
+        },
+    );
+    return replaced.replace(/ {2,}/g, ' ').trim();
+}
+
+/** History-safe version: strips invented tags but keeps known [tags] unresolved
+ *  so stored context stays cheap and never leaks raw Discord markup. */
+export function sanitizeForHistory(text: string): string {
+    if (!text) return text;
+    const { tagRe } = getCache();
+    const replaced = text.replace(
+        tagRe,
+        (tag, custom: string, bracket: string, colon: string, _stripBracket: string, _stripColon: string) => {
+            if (custom) return tag;
+            if ((bracket ?? colon ?? '') !== '') return tag;
             return '';
         },
     );

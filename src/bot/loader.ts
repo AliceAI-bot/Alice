@@ -5,7 +5,6 @@ import { join, extname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { CustomClient } from './client.js';
 import { getDevGuild } from '../config/config.js';
-import { startReminderSweeper } from '../ai/tools/remind.js';
 import type { Event, Command } from '../types/index.js';
 
 const EXT = ['.ts', '.js', '.mjs'];
@@ -22,7 +21,6 @@ export async function ready(client: CustomClient): Promise<void> {
     await loadEvents(client);
     const commands = await loadCommands(client);
     await deployCommands(client, commands);
-    startReminderSweeper(client);
 }
 
 export async function loadEvents(client: CustomClient): Promise<void> {

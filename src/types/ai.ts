@@ -48,7 +48,6 @@ export const TOOL_NAMES = [
     'dm_user',
     'ignore_user',
     'react_to_message',
-    'create_reminder',
     'get_user_profile',
 ] as const;
 
@@ -66,8 +65,6 @@ export interface ToolRequest {
     message?: string;
     action?: 'ignore' | 'unignore';
     emoji?: string;
-    when?: string;
-    text?: string;
 }
 
 export function toolRequestArgs(req: ToolRequest): Record<string, unknown> {
@@ -77,8 +74,6 @@ export function toolRequestArgs(req: ToolRequest): Record<string, unknown> {
     if (req.message !== undefined) args.message = req.message;
     if (req.action !== undefined) args.action = req.action;
     if (req.emoji !== undefined) args.emoji = req.emoji;
-    if (req.when !== undefined) args.when = req.when;
-    if (req.text !== undefined) args.text = req.text;
     return args;
 }
 
@@ -93,35 +88,33 @@ export interface AliceTurn {
 export const ALICE_TURN_SCHEMA = {
     type: 'OBJECT',
     properties: {
-        message: { type: 'STRING', description: "Alice's reply. Empty string only when tool_call is set." },
-        emotion: { type: 'STRING', enum: [...EMOTIONS], description: 'How Alice feels right now.' },
+        message: { type: 'STRING', description: 'Reply as Alice. Empty only if tool_call set. Conversation = messages below; recall questions: answer factually, never say forgot when history shows it, correct prior forgot. Asked to explain: substantive first, no empty tease. Image attached: describe it, never claim blind. Never repeat last turns or apologies; \\n\\n = 2 bubbles rare. Most msgs one [happy/angry/wave/scared/confused/excited/joy/eating/dizzy/wtf] max one per turn, never Unicode in message.' },
+        emotion: { type: 'STRING', enum: [...EMOTIONS] },
         relationship_delta: {
             type: 'INTEGER',
-            description: '-3..+3: how strongly this interaction moves the bond. 0 for neutral smalltalk.',
+            description: '-3..+3, 0 = smalltalk.',
         },
         memory_action: {
             type: 'OBJECT',
             nullable: true,
-            description: 'Set to store or drop a durable fact about the user; null otherwise.',
+            description: 'One fact or null.',
             properties: {
                 action: { type: 'STRING', enum: ['remember', 'forget'] },
-                text: { type: 'STRING', description: 'One-sentence fact to remember, or the exact memory to forget.' },
+                text: { type: 'STRING', description: 'Fact to keep, or exact one to drop.' },
             },
             required: ['action', 'text'],
         },
         tool_call: {
             type: 'OBJECT',
             nullable: true,
-            description: 'Set to invoke a tool instead of replying yet; null once done or not needed. Include only the fields the named tool needs.',
+            description: 'Tool instead of reply; null when done/unneeded. Only that tool fields.',
             properties: {
                 name: { type: 'STRING', enum: [...TOOL_NAMES] },
-                query: { type: 'STRING', description: 'web_search ONLY: short, focused search query.' },
-                target: { type: 'STRING', description: 'dm_user / ignore_user / get_user_profile ONLY: Discord mention (<@userID>). Omit to target the person you are currently talking to.' },
-                message: { type: 'STRING', description: 'dm_user ONLY: the private message to send, in your own voice.' },
-                action: { type: 'STRING', enum: ['ignore', 'unignore'], description: 'ignore_user ONLY: your own call — ignore stops your replies to them for ~24h, unignore allows replies again.' },
-                emoji: { type: 'STRING', description: 'react_to_message ONLY: one emoji (❤️ 😂 🫂 😭 💀). ALMOST NEVER — <1% of turns, only genuinely big moments. Default to not using.' },
-                when: { type: 'STRING', description: 'create_reminder ONLY: their timing verbatim, like "in 10m", "in 1h30m", "tomorrow at 9am", "at 5pm" JST (1m–7d).' },
-                text: { type: 'STRING', description: 'create_reminder ONLY: what to remind them about, short.' },
+                query: { type: 'STRING', description: 'web_search ONLY.' },
+                target: { type: 'STRING', description: 'dm/ignore/profile ONLY: <@id>. Omit = current.' },
+                message: { type: 'STRING', description: 'dm_user ONLY.' },
+                action: { type: 'STRING', enum: ['ignore', 'unignore'], description: 'ignore_user ONLY.' },
+                emoji: { type: 'STRING', description: 'react ONLY, Unicode one of ❤️😂🫂😭💀. Rare 3-5%. Never [tag] here.' },
             },
             required: ['name'],
         },
@@ -152,8 +145,6 @@ function parseToolCall(raw: unknown): ToolRequest | null {
     if (typeof o.message === 'string') req.message = o.message;
     if (o.action === 'ignore' || o.action === 'unignore') req.action = o.action;
     if (typeof o.emoji === 'string' && o.emoji.trim()) req.emoji = o.emoji.trim();
-    if (typeof o.when === 'string' && o.when.trim()) req.when = o.when.trim();
-    if (typeof o.text === 'string' && o.text.trim()) req.text = o.text.trim();
     return req;
 }
 
