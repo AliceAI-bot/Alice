@@ -65,7 +65,7 @@ export default {
                 memberTask,
             ]);
 
-            const hasVoted = await checkVoteCached(targetUser.id, state);
+            const hasVoted = await checkVoteCached(targetUser.id, state, true);
             const currentUsage = state.usage.day === usageToday() ? state.usage.count : 0;
 
             const premiumActive =

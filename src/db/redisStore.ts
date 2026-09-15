@@ -10,6 +10,9 @@ export const SUMMARY_TTL_SECONDS = 3 * 60 * 60;
 
 const USER_TTL_SECONDS = 24 * 60 * 60;
 export const VOTE_FRESH_MS = 60 * 60 * 1000;
+// Negative (not-voted) results go stale much faster so a fresh vote unlocks
+// automatically within minutes instead of staying stuck for a full hour.
+export const VOTE_NEGATIVE_FRESH_MS = 5 * 60 * 1000;
 
 export interface SessionMessage {
     role?: 'user' | 'assistant';

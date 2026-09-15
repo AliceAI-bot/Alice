@@ -13,6 +13,7 @@ import {
     trimSessionToTail,
     usageToday,
     VOTE_FRESH_MS,
+    VOTE_NEGATIVE_FRESH_MS,
     SESSION_MAX_MESSAGES,
     SESSION_MODEL_WINDOW,
 } from '../db/redisStore.js';
@@ -513,7 +514,9 @@ async function handleProcess(
     if (!isByok) {
         usedToday = state.usage.day === usageToday() ? state.usage.count : 0;
 
-        if (vote && now - vote.checkedAt < VOTE_FRESH_MS) {
+        const voteAge = vote ? now - vote.checkedAt : Infinity;
+        const voteTtl = vote?.voted ? VOTE_FRESH_MS : VOTE_NEGATIVE_FRESH_MS;
+        if (vote && voteAge < voteTtl) {
             voted = vote.voted;
         } else {
             const fresh = await refreshVote(userId);

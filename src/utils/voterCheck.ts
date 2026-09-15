@@ -1,6 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
 import { Users } from '../db/database.js';
-import { getUserState, saveUserState, VOTE_FRESH_MS } from '../db/redisStore.js';
+import { getUserState, saveUserState, VOTE_FRESH_MS, VOTE_NEGATIVE_FRESH_MS } from '../db/redisStore.js';
 import type { UserState } from '../db/redisStore.js';
 import { loadEnv } from '../config/env.js';
 
@@ -90,9 +90,19 @@ export function refreshVote(userId: string): Promise<boolean | null> {
     return fresh;
 }
 
-export async function checkVoteCached(userId: string, state: UserState): Promise<boolean> {
-    if (state.vote && Date.now() - state.vote.checkedAt < VOTE_FRESH_MS) {
-        return state.vote.voted;
+export async function checkVoteCached(
+    userId: string,
+    state: UserState,
+    forceRefresh = false,
+): Promise<boolean> {
+    if (!forceRefresh && state.vote) {
+        const age = Date.now() - state.vote.checkedAt;
+        // Positive votes stay cached for VOTE_FRESH_MS; negative results only
+        // for VOTE_NEGATIVE_FRESH_MS so a fresh vote is picked up automatically.
+        const ttl = state.vote.voted ? VOTE_FRESH_MS : VOTE_NEGATIVE_FRESH_MS;
+        if (age < ttl) {
+            return state.vote.voted;
+        }
     }
 
     const voted = await refreshVote(userId);
@@ -107,7 +117,7 @@ export async function checkVoteCached(userId: string, state: UserState): Promise
     return voted;
 }
 
-export async function checkVote(userId: string): Promise<boolean> {
+export async function checkVote(userId: string, forceRefresh = false): Promise<boolean> {
     let state;
     try {
         state = await getUserState(userId);
@@ -116,7 +126,7 @@ export async function checkVote(userId: string): Promise<boolean> {
         return voted ?? false;
     }
 
-    return checkVoteCached(userId, state);
+    return checkVoteCached(userId, state, forceRefresh);
 }
 
 export interface VotePrompt {
@@ -132,7 +142,9 @@ export async function isVoter(
     const user = await Users.get(userId);
     if (user?.tier === 'premium') return null;
 
-    const hasVoted = await checkVote(userId);
+    // Vote gates are low-frequency: always revalidate live so a fresh vote
+    // unlocks instantly instead of staying blocked on a stale negative cache.
+    const hasVoted = await checkVote(userId, true);
     if (hasVoted) return null;
 
     const embed = new EmbedBuilder()
