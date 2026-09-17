@@ -9,6 +9,16 @@ interface EmojiCache {
 
 let cache: EmojiCache | null = null;
 
+// Unicode pictographs never render as Alice — only [tags] resolve to emojis.
+// Strip them (plus leftover variation selectors / ZWJ / keycap marks) so model
+// slip never leaks yellow emojis into chat. ASCII [tags] are unaffected.
+const UNICODE_PICTO_RE = /\p{Extended_Pictographic}\uFE0F?/gu;
+const EMOJI_MOD_RE = /[\uFE0E\uFE0F\u200D\u20E3]/g;
+
+function stripUnicodeEmojis(text: string): string {
+    return text.replace(UNICODE_PICTO_RE, '').replace(EMOJI_MOD_RE, '');
+}
+
 function getCache(): EmojiCache {
     if (!cache) {
         const entries = getEmojis() ?? [];
@@ -17,9 +27,8 @@ function getCache(): EmojiCache {
             .map((entry) => entry.name.replace(RE_SPECIAL, '\\$&'))
             .join('|');
         // Single pass: existing custom-emoji markup passes through untouched.
-        // Known [name] / :name: resolve (colon form allows underscores so
-        // :confused_what: can't bypass as invented). Unknown ([wry],
-        // :wry:, :foo_bar:) is stripped so invented tags never leak.
+        // Known [name] / :name: resolve. Unknown ([wry], :wry:) is stripped
+        // so invented tags never leak.
         cache = {
             map,
             tagRe: new RegExp(
@@ -33,18 +42,25 @@ function getCache(): EmojiCache {
 
 export function applyEmojis(text: string): string {
     if (!text) return text;
+    // Strip Unicode emoji first (always, even with zero tags configured),
+    // then resolve tags — first tag wins, later ones are dropped so a reply
+    // never carries more than one emoji (second sentence gets none).
+    let replaced = stripUnicodeEmojis(text);
     const { map, tagRe } = getCache();
-    if (!map.size) return text;
-    const replaced = text.replace(
-        tagRe,
-        (tag, custom: string, bracket: string, colon: string, _stripBracket: string, _stripColon: string) => {
-            if (custom) return tag;
-            const name = (bracket ?? colon ?? '').toLowerCase();
-            if (name) return map.get(name) ?? tag;
-            // Unknown [tag] / :tag: — strip it.
-            return '';
-        },
-    );
+    if (map.size) {
+        let seen = false;
+        replaced = replaced.replace(
+            tagRe,
+            (tag, custom: string, bracket: string, colon: string, _stripBracket: string, _stripColon: string) => {
+                if (custom) return tag;
+                const name = (bracket ?? colon ?? '').toLowerCase();
+                if (!name) return '';
+                if (seen) return '';
+                seen = true;
+                return map.get(name) ?? tag;
+            },
+        );
+    }
     return replaced.replace(/ {2,}/g, ' ').trim();
 }
 

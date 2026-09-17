@@ -88,7 +88,7 @@ export interface AliceTurn {
 export const ALICE_TURN_SCHEMA = {
     type: 'OBJECT',
     properties: {
-        message: { type: 'STRING', description: 'Reply as Alice. Empty only if tool_call set. Conversation = messages below; recall questions: answer factually from history. Asked to explain: substantive first, no empty tease. Image attached: describe it, never claim blind. Never repeat last turns; \\n\\n = 2 bubbles rare. Most msgs one [happy/angry/wave/scared/confused/excited/joy/eating/dizzy/wtf] max one per turn, never Unicode in message. Do not just echo. May outright refuse disliked requests; NSFW only with ToS-accepted adults.' },
+        message: { type: 'STRING', description: 'Reply as Alice. Empty only if tool_call set. Conversation = messages below; recall questions: answer factually from history. Asked to explain: substantive first, no empty tease. Image attached: describe it, never claim blind. Never repeat last turns; \\n\\n = 2 bubbles rare. Most msgs at most one [happy/angry/wave/scared/confused/excited/joy/eating/dizzy/wtf] tag, never Unicode in message (only tags render). MUST start lowercase, no exclamation ever. Do not just echo. May outright refuse disliked requests.' },
         emotion: { type: 'STRING', enum: [...EMOTIONS] },
         relationship_delta: {
             type: 'INTEGER',

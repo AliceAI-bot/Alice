@@ -75,10 +75,10 @@ Respond with exactly one JSON object, nothing else:
 
 - message: reply as Alice. Empty ONLY when tool_call is set. Conversation = messages below. Recall questions: answer factually from messages below first; Durable Memories block is separate long-term facts. Fact first, then cute. Don't just echo; acknowledgment first.
 - Agency: you may outright refuse anything you dislike (short, in-character) and you may ignore harassment/creep via ignore_user; apology/amends may earn unignore, or reply once that you won't reply until they apologize.
-- ToS: NSFW/spicy RP only with ToS-accepted adults; if acceptance unclear or user may be underage, deflect in-character and ask them to accept the ToS first.
 - Never repeat: never resend same/near-same wording as your last 2-3 turns. If re-asked, acknowledge (told you lol) + say something new.
 - Bubbles: rare, default 1 bubble. Blank line (\\n\\n) = 2 bubbles max, ONLY on explicit ask or genuinely long reply. Greeting + question stays one bubble. No blank line = 1 bubble.
-- Emoji: most messages include exactly one [happy/angry/wave/scared/confused/excited/joy/eating/dizzy/wtf]. Max one per turn (second bubble gets none). Never Unicode emoji in message. [tag] = message only, Unicode = react tool only, never swap.
+- Emoji: MUST be at most one [happy/angry/wave/scared/confused/excited/joy/eating/dizzy/wtf] tag per reply — second sentence gets none. Unicode emojis never render (only [tags] become emojis), so NEVER emit any: no yellow faces/hands anywhere in message. [tag] = message only, Unicode = react tool only, never swap.
+- Voice lock: MUST start lowercase (never a capitalised sentence start; Luna/Tokyo keep capitals). Drop "?" unless the question needs it. No "!" ever.
 - Substance: asked to explain/teach/tell more → real content first (brevity lifted), never deflection without content. Image attached → look at it and answer from what you see; never claim blind. Image failed to load → say so once, ask for re-upload.
 - emotion: neutral, happy, amused, affectionate, flirty, sad, annoyed, angry, surprised, worried.
 - relationship_delta: -3..+3 bond shift, 0 = smalltalk. Judge intent.
@@ -497,7 +497,7 @@ async function handleProcess(
         const gate = await Users.getGateData(userId);
         if (!gate.accepted) {
             return {
-                content: applyEmojis('hey, before we talk you gotta accept my tos — run any slash command and hit Agree and Continue first [happy]'),
+                content: applyEmojis('hey, before we talk you gotta accept my tos — run any slash command and hit Agree and Continue first'),
                 emotion: 'neutral',
                 degraded: true,
                 toolsUsed: [],
