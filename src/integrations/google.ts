@@ -3,12 +3,23 @@ import { GoogleGenAI, MediaResolution, ThinkingLevel } from '@google/genai';
 import type { Content, GenerateContentConfig, GenerateContentResponse } from '@google/genai';
 import { AiError, AiMessage } from '../types/ai.js';
 
-export const DEFAULT_MODEL = 'gemma-4-26b-a4b-it';
+export const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 export const DEFAULT_TEMPERATURE = 1.3;
+
+// Structured-output defaults for gemini-3.5-flash-lite. The main chat turn
+// enforces responseSchema, so it needs a cool temp, a small thinking budget,
+// and headroom for reasoning + JSON. (HIGH thinking + 600 tokens starves the
+// JSON and yields empty/truncated text that fails JSON.parse every time.)
+export const STRUCTURED_TEMPERATURE = 0.8;
+export const STRUCTURED_MAX_TOKENS = 1500;
 
 
 export function pickGenParams(): { temperature: number; maxTokens: number } {
     return { temperature: DEFAULT_TEMPERATURE, maxTokens: 600 };
+}
+
+export function pickStructuredParams(): { temperature: number; maxTokens: number } {
+    return { temperature: STRUCTURED_TEMPERATURE, maxTokens: STRUCTURED_MAX_TOKENS };
 }
 
 const MAX_ATTEMPTS = 4;
@@ -170,18 +181,29 @@ export interface ChatResult {
     text: string;
     model: string;
     thinking: ThinkingLevel;
+    finishReason?: string | null | undefined;
+    usage?:
+        | {
+              promptTokens?: number | undefined;
+              candidatesTokens?: number | undefined;
+              thoughtsTokens?: number | undefined;
+              totalTokens?: number | undefined;
+          }
+        | undefined;
 }
 
 export async function chat(options: ChatOptions): Promise<ChatResult> {
     const contents = toContents(options.messages, options.images);
-    const thinking = options.thinking ?? ThinkingLevel.HIGH;
+    const isStructured = Boolean(options.schema);
+    const thinking = options.thinking ?? (isStructured ? ThinkingLevel.LOW : ThinkingLevel.HIGH);
     const auto = pickGenParams();
+    const structuredAuto = pickStructuredParams();
     const config: GenerateContentConfig = {
-        temperature: options.temperature ?? auto.temperature,
+        temperature: options.temperature ?? (isStructured ? structuredAuto.temperature : auto.temperature),
         thinkingConfig: { thinkingLevel: thinking },
     };
     if (options.system) config.systemInstruction = options.system;
-    config.maxOutputTokens = options.maxTokens ?? auto.maxTokens;
+    config.maxOutputTokens = options.maxTokens ?? (isStructured ? structuredAuto.maxTokens : auto.maxTokens);
     // 2 images max and only for casual image chat — LOW keeps vision tokens ~280/img.
     if (options.images?.length) config.mediaResolution = MediaResolution.MEDIA_RESOLUTION_LOW;
     if (options.schema) {
@@ -195,7 +217,30 @@ export async function chat(options: ChatOptions): Promise<ChatResult> {
             contents,
             config,
         });
-        return { text: response.text ?? '', model: response.modelVersion ?? DEFAULT_MODEL, thinking };
+        const text = response.text ?? '';
+        const candidate = (response as { candidates?: Array<{ finishReason?: unknown }> }).candidates?.[0];
+        const finishReason =
+            typeof candidate?.finishReason === 'string' ? candidate.finishReason : null;
+        const usageRaw = (response as unknown as { usageMetadata?: Record<string, unknown> }).usageMetadata;
+        const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+        const usage = usageRaw
+            ? {
+                  promptTokens: num(usageRaw.promptTokenCount),
+                  candidatesTokens: num(usageRaw.candidatesTokenCount),
+                  thoughtsTokens: num(usageRaw.thoughtsTokenCount),
+                  totalTokens: num(usageRaw.totalTokenCount),
+              }
+            : undefined;
+        if (!text) {
+            console.warn('[ai] empty model text', {
+                model: DEFAULT_MODEL,
+                finishReason,
+                usage,
+                thinking: String(thinking),
+                structured: isStructured,
+            });
+        }
+        return { text, model: response.modelVersion ?? DEFAULT_MODEL, thinking, finishReason, usage };
     }, options.apiKey);
 }
 

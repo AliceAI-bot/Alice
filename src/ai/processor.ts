@@ -218,19 +218,48 @@ async function askAlice(
     images?: ChatImage[],
 ): Promise<{ turn: AliceTurn; thinking: string }> {
     let lastThinking = 'unknown';
+    let lastDiagnostics: { textLen: number; finishReason: string | null; model: string; preview: string } = {
+        textLen: 0,
+        finishReason: 'unknown',
+        model: 'unknown',
+        preview: '',
+    };
     for (let attempt = 0; attempt < 2; attempt++) {
-        const { text, thinking } = await chat({
+        const isRetry = attempt === 1;
+        const { text, thinking, model, finishReason } = await chat({
             system,
-            messages,
+            // Retry with an explicit JSON-only nudge (new array — never mutate the caller's history).
+            messages: isRetry
+                ? [...messages, { role: 'user', content: '[system] Return exactly one JSON object now, no prose, no code fences.' }]
+                : messages,
             schema: ALICE_TURN_SCHEMA,
+            // Retry cooler with minimal reasoning: maximizes the chance of valid JSON.
+            ...(isRetry ? { temperature: 0.3, thinking: ThinkingLevel.MINIMAL } : {}),
             ...(apiKey ? { apiKey } : {}),
             ...(images?.length ? { images } : {}),
         });
         lastThinking = String(thinking);
+        lastDiagnostics = {
+            textLen: text.length,
+            finishReason: finishReason ?? 'unknown',
+            model,
+            preview: text.slice(0, 300),
+        };
         const turn = parseAliceTurn(text);
         if (turn) return { turn, thinking: lastThinking };
+        console.warn('[ai] Alice turn parse failed', {
+            attempt: attempt + 1,
+            model,
+            finishReason: finishReason ?? null,
+            textLen: text.length,
+            preview: text.slice(0, 500),
+        });
     }
-    throw new AiError('Model produced unusable structured output.');
+    throw new AiError(
+        `Model produced unusable structured output (lastFinish=${lastDiagnostics.finishReason} lastLen=${lastDiagnostics.textLen}).`,
+        0,
+        lastDiagnostics,
+    );
 }
 
 const MAX_TOOL_ROUNDS = 2;

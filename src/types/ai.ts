@@ -87,9 +87,10 @@ export interface AliceTurn {
 
 export const ALICE_TURN_SCHEMA = {
     type: 'OBJECT',
+    propertyOrdering: ['message', 'emotion', 'relationship_delta', 'memory_action', 'tool_call'],
     properties: {
         message: { type: 'STRING', description: 'Reply as Alice. Empty only if tool_call set. Conversation = messages below; recall questions: answer factually from history. Asked to explain: substantive first, no empty tease. Image attached: describe it, never claim blind. Never repeat last turns; \\n\\n = 2 bubbles rare. Most msgs at most one [happy/angry/wave/scared/confused/excited/joy/eating/dizzy/wtf] tag, never Unicode in message (only tags render). MUST start lowercase, no exclamation ever. Do not just echo. May outright refuse disliked requests.' },
-        emotion: { type: 'STRING', enum: [...EMOTIONS] },
+        emotion: { type: 'STRING', format: 'enum', enum: [...EMOTIONS] },
         relationship_delta: {
             type: 'INTEGER',
             description: '-3..+3, 0 = smalltalk.',
@@ -98,8 +99,9 @@ export const ALICE_TURN_SCHEMA = {
             type: 'OBJECT',
             nullable: true,
             description: 'One fact or null.',
+            propertyOrdering: ['action', 'text'],
             properties: {
-                action: { type: 'STRING', enum: ['remember', 'forget'] },
+                action: { type: 'STRING', format: 'enum', enum: ['remember', 'forget'] },
                 text: { type: 'STRING', description: 'Fact to keep, or exact one to drop.' },
             },
             required: ['action', 'text'],
@@ -108,12 +110,13 @@ export const ALICE_TURN_SCHEMA = {
             type: 'OBJECT',
             nullable: true,
             description: 'Tool instead of reply; null when done/unneeded. Only that tool fields.',
+            propertyOrdering: ['name', 'query', 'target', 'message', 'action', 'emoji'],
             properties: {
-                name: { type: 'STRING', enum: [...TOOL_NAMES] },
+                name: { type: 'STRING', format: 'enum', enum: [...TOOL_NAMES] },
                 query: { type: 'STRING', description: 'web_search ONLY.' },
                 target: { type: 'STRING', description: 'dm/ignore/profile ONLY: <@id>. Omit = current.' },
                 message: { type: 'STRING', description: 'dm_user ONLY.' },
-                action: { type: 'STRING', enum: ['ignore', 'unignore'], description: 'ignore_user ONLY.' },
+                action: { type: 'STRING', format: 'enum', enum: ['ignore', 'unignore'], description: 'ignore_user ONLY.' },
                 emoji: { type: 'STRING', description: 'react ONLY, Unicode one of ❤️😂🫂😭💀. Rare 3-5%. Never [tag] here.' },
             },
             required: ['name'],
@@ -124,6 +127,25 @@ export const ALICE_TURN_SCHEMA = {
 
 const EMOTION_SET: ReadonlySet<string> = new Set(EMOTIONS);
 const TOOL_NAME_SET: ReadonlySet<string> = new Set(TOOL_NAMES);
+
+/** Tolerate prose/fences around the JSON object (Lite models drift at high temp). */
+function extractJsonCandidate(rawText: unknown): string | null {
+    if (typeof rawText !== 'string') return null;
+    let text = rawText.trim();
+    if (!text) return null;
+    const fence = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fence?.[1]) text = fence[1].trim();
+    if (!text) return null;
+    if (text.startsWith('{')) {
+        const end = text.lastIndexOf('}');
+        if (end !== -1) return text.slice(0, end + 1);
+        return text;
+    }
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end !== -1 && end > start) return text.slice(start, end + 1);
+    return text;
+}
 
 function parseMemoryAction(raw: unknown): MemoryAction | null {
     if (!raw || typeof raw !== 'object') return null;
@@ -149,9 +171,11 @@ function parseToolCall(raw: unknown): ToolRequest | null {
 }
 
 export function parseAliceTurn(rawText: string): AliceTurn | null {
+    const candidate = extractJsonCandidate(rawText);
+    if (!candidate) return null;
     let obj: unknown;
     try {
-        obj = JSON.parse(rawText);
+        obj = JSON.parse(candidate);
     } catch {
         return null;
     }
