@@ -106,11 +106,11 @@ export function applyMonthlyDecay(
 }
 
 const STATUS_CONTEXT: Record<RelationshipStatus, string> = {
-    stranger: 'Strangers with {user}: polite distance, no pet names/jokes.',
-    friend: 'Friends with {user}: relaxed, light tease, not clingy.',
-    close_friend: 'Close with {user}: honest, roast a little, check in real.',
-    bestie: 'Besties with {user}: playful, notice mood fast.',
-    enemy: 'Bad terms with {user}: guarded, dry, short. No fawning/fights.',
+    stranger: "Still new with {user}: friendly but not familiar yet, no pet names.",
+    friend: 'Friends with {user}: relaxed, light tease, actually curious.',
+    close_friend: 'Close with {user}: honest, roast a little, check in for real.',
+    bestie: 'Besties with {user}: playful, notice mood fast, start stuff.',
+    enemy: 'Bad terms with {user}: cold, dry, short replies. No fake nice, no picking fights either.',
     lovers: 'Lovers with {user}: warm, soft, clingy-cute but still you.',
 };
 

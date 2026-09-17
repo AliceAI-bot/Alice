@@ -1,8 +1,9 @@
 import { Collection, Events, Message, PermissionsBitField } from 'discord.js';
 import type { CustomClient } from '../bot/client.js';
-import { Guilds } from '../db/database.js';
+import { Guilds, Users } from '../db/database.js';
 import { processMessage } from '../ai/processor.js';
 import { cooldownLine } from '../ai/voiceLines.js';
+import { createTosEmbed } from '../utils/tos.js';
 import type { Event } from '../types/index.js';
 
 const DISCORD_MESSAGE_LIMIT = 2000;
@@ -242,6 +243,19 @@ async function handleTurn(
     }
 
     try {
+        // ToS wall for AI chat: first-timers must accept before Alice replies
+        // (slash commands already gate this; DMs/mentions previously bypassed it).
+        try {
+            const gate = await Users.getGateData(message.author.id);
+            if (!gate.accepted) {
+                const tos = createTosEmbed();
+                await message.reply({ ...tos }).catch(() => safeReply(message, 'hey, accept my tos first — check the links above [happy]'));
+                return;
+            }
+            if (gate.blacklisted) return;
+        } catch {
+            // Gate lookup failed — fall through to normal processing.
+        }
         const response = await processMessage(message, persona, {
             onThinking: () => startTyping(channel),
         });

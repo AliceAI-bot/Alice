@@ -7,8 +7,8 @@ export function createTosEmbed(): { embeds: EmbedBuilder[]; components: ActionRo
         .setTitle('Terms of Service & Privacy Policy')
         .setDescription(
             'Before using Alice, please review and accept our policies:\n\n' +
-            '• [Terms and Conditions](https://github.com/AliceBotTeam/Alice-Terms)\n' +
-            '• [Privacy Policy](https://github.com/AliceBotTeam/Alice-Privacy)\n\n' +
+            '• [Terms of Service](https://github.com/AliceAI-bot/Terms/blob/main/Terms.md)\n' +
+            '• [Privacy Policy](https://github.com/AliceAI-bot/Terms/blob/main/Privacy.md)\n\n' +
             'By clicking **Agree and Continue**, you acknowledge and accept the terms above.'
         );
 

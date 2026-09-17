@@ -112,12 +112,17 @@ export default {
     autocomplete: async (interaction: AutocompleteInteraction): Promise<void> => {
         const focused = interaction.options.getFocused(true);
         if (focused.name === 'personality') {
-            const personas = await getAvailablePersonas();
+            let personas: string[] = [];
+            try {
+                personas = await getAvailablePersonas();
+            } catch {
+                personas = [];
+            }
             const filtered = personas
                 .filter(p => p.toLowerCase().includes(focused.value.toLowerCase()))
                 .slice(0, 25)
                 .map(p => ({ name: p.charAt(0).toUpperCase() + p.slice(1), value: p }));
-            await interaction.respond(filtered);
+            await interaction.respond(filtered).catch(() => null);
         }
     },
 } as Command;
@@ -126,6 +131,12 @@ async function handleEnable(interaction: ChatInputCommandInteraction, guildId: s
     const persona = interaction.options.getString('personality', true);
 
     const personas = await getAvailablePersonas();
+    if (!personas.length) {
+        await interaction.editReply({
+            embeds: [createEmbed(interaction, '❌ No Personas Installed', '```md\n# No persona files found\n> Expected: src/ai/instructions/Persona/*.txt\n> This release ships `default.txt` only — make sure it is present.\n```', COLORS.error)],
+        });
+        return;
+    }
     if (!personas.includes(persona)) {
         const available = personas.map(p => '`' + p + '`').join(', ');
         await interaction.editReply({
@@ -153,6 +164,12 @@ async function handleUpdate(interaction: ChatInputCommandInteraction, guildId: s
     const persona = interaction.options.getString('personality', true);
 
     const personas = await getAvailablePersonas();
+    if (!personas.length) {
+        await interaction.editReply({
+            embeds: [createEmbed(interaction, '❌ No Personas Installed', '```md\n# No persona files found\n> Expected: src/ai/instructions/Persona/*.txt\n> This release ships `default.txt` only — make sure it is present.\n```', COLORS.error)],
+        });
+        return;
+    }
     if (!personas.includes(persona)) {
         const available = personas.map(p => '`' + p + '`').join(', ');
         await interaction.editReply({

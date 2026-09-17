@@ -1,5 +1,7 @@
 # Contributing
 
+> Note: this project is source-available under PolyForm Noncommercial 1.0.0, not OSI-approved open source. By contributing you agree your work is licensed under the same terms.
+
 First off, thank you for considering contributing to this project! Every contribution, whether it's fixing bugs, improving documentation, or adding new features, is appreciated.
 
 ## Before You Start

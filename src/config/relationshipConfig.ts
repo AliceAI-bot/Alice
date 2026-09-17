@@ -56,6 +56,6 @@ export const RELATIONSHIP_CONFIG: RelationshipConfig = {
         voterBonus: 50,
     },
     ignore: {
-        durationMs: 24 * 60 * 60 * 1000,
+        durationMs: 10 * 60 * 1000,
     },
 };

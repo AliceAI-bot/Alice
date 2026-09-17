@@ -1,14 +1,15 @@
 {
   "name": "alice",
   "version": "1.0.0",
-  "description": "Alice AI",
+  "description": "Alice AI (source-available under PolyForm Noncommercial 1.0.0, not OSI open source)",
   "main": "dist/src/index.js",
   "type": "module",
   "scripts": {
     "dev": "tsc --noEmit --watch",
     "build": "swc src -d dist",
     "start": "node dist/src/index.js",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
   },
   "keywords": [],
   "author": "MaliciousByte",

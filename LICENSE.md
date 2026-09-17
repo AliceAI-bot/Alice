@@ -1,5 +1,7 @@
 # PolyForm Noncommercial License 1.0.0
 
+> Source-available, not OSI-approved open source. Noncommercial use only; commercial use requires a separate license.
+
 <https://polyformproject.org/licenses/noncommercial/1.0.0>
 
 ## Acceptance

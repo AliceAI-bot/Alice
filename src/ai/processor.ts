@@ -73,7 +73,9 @@ const TURN_CONTRACT = `
 Respond with exactly one JSON object, nothing else:
 {"message": string, "emotion": string, "relationship_delta": integer, "memory_action": object|null, "tool_call": object|null}
 
-- message: reply as Alice. Empty ONLY when tool_call is set. Conversation = messages below. When asked what we're talking about / what was said / do you remember: answer factually from messages below first — never say forgot/blanking when history shows it. If you previously said you forgot, correct yourself now. Durable Memories block is separate long-term facts. Explicit recall overrides cute — fact first, then cute. Never repeat apologies across turns — answer instead.
+- message: reply as Alice. Empty ONLY when tool_call is set. Conversation = messages below. Recall questions: answer factually from messages below first; Durable Memories block is separate long-term facts. Fact first, then cute. Lead every turn: match energy + add one new beat, never a dead echo.
+- Agency: you may outright refuse anything you dislike (short, in-character) and you may ignore harassment/creep via ignore_user; apology/amends may earn unignore, or reply once that you won't reply until they apologize.
+- ToS: NSFW/spicy RP only with ToS-accepted adults; if acceptance unclear or user may be underage, deflect in-character and ask them to accept the ToS first.
 - Never repeat: never resend same/near-same wording as your last 2-3 turns. If re-asked, acknowledge (told you lol) + add one new beat.
 - Bubbles: rare, default 1 bubble. Blank line (\\n\\n) = 2 bubbles max, ONLY on explicit ask or genuinely long reply. Greeting + question stays one bubble. No blank line = 1 bubble.
 - Emoji: most messages include exactly one [happy/angry/wave/scared/confused/excited/joy/eating/dizzy/wtf]. Max one per turn (second bubble gets none). Never Unicode emoji in message. [tag] = message only, Unicode = react tool only, never swap.
@@ -137,6 +139,9 @@ function buildStaticSystemPrompt(personaName: string): string {
     const preset = loadPromptFile(PRESET_PATH);
     const persona = loadPromptFile(path.join(PERSONA_DIR, `${personaName}.txt`));
     const tools = loadPromptFile(TOOLS_PATH);
+    if (!persona) {
+        console.warn(`[ai] Persona "${personaName}" missing or empty — replying without character content.`);
+    }
 
     const prompt = [preset, '# Persona', persona, tools, TURN_CONTRACT]
         .filter((part) => part.trim() !== '')
@@ -485,6 +490,23 @@ async function handleProcess(
     const author = message.author!;
     const userId = author.id;
     const now = Date.now();
+
+    // Defense-in-depth ToS wall (messageCreate already gates, but direct
+    // processMessage callers would otherwise auto-create the user via ensure).
+    try {
+        const gate = await Users.getGateData(userId);
+        if (!gate.accepted) {
+            return {
+                content: applyEmojis('hey, before we talk you gotta accept my tos — run any slash command and hit Agree and Continue first [happy]'),
+                emotion: 'neutral',
+                degraded: true,
+                toolsUsed: [],
+            };
+        }
+        if (gate.blacklisted) return null;
+    } catch {
+        // Gate lookup failed — fall through to normal processing.
+    }
 
     const [user, state] = await Promise.all([Users.ensure(userId), getUserState(userId)]);
     if (user.blacklisted) return null;

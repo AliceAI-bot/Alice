@@ -28,7 +28,9 @@ export async function executeIgnore(ctx: ToolContext, args: Record<string, unkno
     } catch {
     }
 
+    const durationMin = Math.round(RELATIONSHIP_CONFIG.ignore.durationMs / 60000);
+
     return action === 'ignore'
-        ? `Alice is ignoring ${name} for the next 24 hours.`
+        ? `Alice is ignoring ${name} for the next ${durationMin} minutes.`
         : `Alice is no longer ignoring ${name}.`;
 }
