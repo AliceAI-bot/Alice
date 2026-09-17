@@ -3,7 +3,7 @@ import { GoogleGenAI, MediaResolution, ThinkingLevel } from '@google/genai';
 import type { Content, GenerateContentConfig, GenerateContentResponse } from '@google/genai';
 import { AiError, AiMessage } from '../types/ai.js';
 
-export const DEFAULT_MODEL = 'gemma-4-31b-it';
+export const DEFAULT_MODEL = 'gemma-4-26b-a4b-it';
 export const DEFAULT_TEMPERATURE = 1.3;
 
 
