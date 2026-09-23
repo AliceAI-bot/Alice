@@ -263,8 +263,8 @@ export async function groundedSearch(query: string, apiKey?: string): Promise<Gr
     const contents: Content[] = [{ role: 'user', parts: [{ text: query }] }];
     const config: GenerateContentConfig = {
         temperature: 0.3,
-        maxOutputTokens: 2048,
-        thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+        maxOutputTokens: 800,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         tools: [{ googleSearch: {} }],
     };
 

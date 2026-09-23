@@ -1,17 +1,12 @@
-import { ChatInputCommandInteraction, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
+import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
 import { Users } from '../db/database.js';
 import { getUserState, usageToday } from '../db/redisStore.js';
 import { checkVoteCached } from '../utils/voterCheck.js';
 import { RELATIONSHIP_CONFIG } from '../config/relationshipConfig.js';
 import { roundAffection } from '../utils/relationship.js';
 import { getBadge } from '../config/config.js';
+import { baseEmbed, EMBED_COLORS as COLORS } from '../utils/embeds.js';
 import type { Command } from '../types/index.js';
-
-const COLORS = {
-    primary: 0xFFD700,
-    pink: 0xFFB6C1,
-    error: 0xFF4444,
-};
 
 const MAX_FIELD_LENGTH = 1024;
 
@@ -99,12 +94,12 @@ export default {
                       .join('\n')
                 : '> No badges earned yet';
 
-            const embed = new EmbedBuilder()
-                .setAuthor({
-                    name: `${targetUser.username}'s Profile`,
-                    iconURL: targetUser.displayAvatarURL(),
-                })
-                .setDescription(`\`\`\`md\n# ${targetUser.username}\n> ID: ${targetUser.id}\n\`\`\``)
+            const embed = baseEmbed(
+                interaction,
+                `${targetUser.username}'s Profile`,
+                `\`\`\`md\n# ${targetUser.username}\n> ID: ${targetUser.id}\n\`\`\``,
+                premiumActive ? COLORS.primary : COLORS.pink,
+            )
                 .addFields(
                     {
                         name: '📊 User Statistics',
@@ -134,24 +129,18 @@ export default {
                         inline: false,
                     },
                 )
-                .setColor(premiumActive ? COLORS.primary : COLORS.pink)
-                .setThumbnail(targetUser.displayAvatarURL({ size: 256 }))
-                .setFooter({
-                    text: `Requested by ${interaction.user.tag}`,
-                    iconURL: interaction.user.displayAvatarURL(),
-                })
-                .setTimestamp();
+                .setThumbnail(targetUser.displayAvatarURL({ size: 256 }));
 
             await interaction.editReply({ embeds: [embed] });
         } catch (err) {
             console.error(`Profile command error (${targetUser.id}):`, err);
 
-            const embed = new EmbedBuilder()
-                .setTitle('❌ Error')
-                .setDescription(
-                    `\`\`\`md\n# Something went wrong\n> ${err instanceof Error ? err.message : 'Unknown error'}\n\`\`\``,
-                )
-                .setColor(COLORS.error);
+            const embed = baseEmbed(
+                interaction,
+                '❌ Error',
+                `\`\`\`md\n# Something went wrong\n> ${err instanceof Error ? err.message : 'Unknown error'}\n\`\`\``,
+                COLORS.error,
+            );
 
             await interaction.editReply({ embeds: [embed] }).catch(() => null);
         }

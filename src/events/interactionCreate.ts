@@ -1,14 +1,15 @@
 import { Events, Interaction, ChatInputCommandInteraction, ButtonInteraction } from 'discord.js'; import { CustomClient } from '../bot/client.js'; import { createTosEmbed, handleTosButton } from '../utils/tos.js'; import { Users } from '../db/database.js'; import { buildBlacklistResponse } from '../utils/blacklistUtil.js'; import { handleByokButton, handleByokModal } from '../commands/byok.js'; import type { Event, Command } from '../types/index.js';
-// ik ik the above line is very sigma lol
-//
+
 export default {
     name: Events.InteractionCreate,
     async execute(interaction: Interaction, client: CustomClient): Promise<void> {
         if (interaction.isButton()) {
+            // The ToS buttons ARE the acceptance flow — everything else is gated.
             if (interaction.customId === 'accept_tos' || interaction.customId === 'cancel_tos') {
                 await handleTosButton(interaction as ButtonInteraction);
                 return;
             }
+            if (await isBlocked(interaction)) return;
             if (interaction.customId.startsWith('byok_add') || interaction.customId.startsWith('byok_remove')) {
                 await handleByokButton(interaction as ButtonInteraction);
                 return;
@@ -17,6 +18,7 @@ export default {
         }
         if (interaction.isModalSubmit()) {
             if (interaction.customId === 'byok_modal') {
+                if (await isBlocked(interaction)) return;
                 await handleByokModal(interaction);
                 return;
             }
@@ -39,24 +41,7 @@ export default {
         const command = client.slashCommands.get(interaction.commandName) as Command | undefined;
         if (!command) return;
 
-        // One cached read covers ToS acceptance + blacklist status + reason.
-        const gate = await Users.getGateData(interaction.user.id);
-
-        if (!gate.accepted) {
-            const tos = createTosEmbed();
-            await interaction.reply({ ...tos, flags: 64 }).catch(() => null);
-            return;
-        }
-
-        if (gate.blacklisted) {
-            await interaction
-                .reply({
-                    ...buildBlacklistResponse(gate.reason ?? 'Multiple policy violations', interaction.client),
-                    flags: 64,
-                })
-                .catch(() => null);
-            return;
-        }
+        if (await isBlocked(interaction)) return;
 
         const cooldownKey = `${interaction.user.id}:${interaction.commandName}`;
         const now = Date.now();
@@ -94,3 +79,31 @@ export default {
         }
     },
 } as Event;
+
+/**
+ * Shared ToS + blacklist wall for every interaction type. Returns true when
+ * blocked (already replied). One cached read covers acceptance + status.
+ */
+async function isBlocked(
+    interaction: Pick<Interaction, 'user' | 'client'> & {
+        reply: (options: Record<string, unknown>) => Promise<unknown>;
+    },
+): Promise<boolean> {
+    const gate = await Users.getGateData(interaction.user.id);
+
+    if (!gate.accepted) {
+        await interaction.reply({ ...createTosEmbed(), flags: 64 }).catch(() => null);
+        return true;
+    }
+
+    if (gate.blacklisted) {
+        await interaction
+            .reply({
+                ...buildBlacklistResponse(gate.reason ?? 'Multiple policy violations', interaction.client),
+                flags: 64,
+            })
+            .catch(() => null);
+        return true;
+    }
+    return false;
+}

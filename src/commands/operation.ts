@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChatInputCommandInteraction, TextChannel } from 'discord.js';
 import { Users } from '../db/database.js';
 import { isOwner, isModerator, getLogChannel, getBadge } from '../config/config.js';
+import { baseEmbed } from '../utils/embeds.js';
 import type { Command } from '../types/index.js';
 
 export default {
@@ -27,9 +28,9 @@ export default {
                     { name: 'Check', value: 'check' }
                 )
         )
-        .addStringOption(opt =>
-            opt.setName('userid')
-                .setDescription('Target user ID')
+        .addUserOption(opt =>
+            opt.setName('user')
+                .setDescription('Target user')
                 .setRequired(true)
         )
         .addStringOption(opt =>
@@ -54,7 +55,7 @@ export default {
     execute: async (interaction: ChatInputCommandInteraction): Promise<void> => {
         const mode = interaction.options.getString('mode', true);
         const action = interaction.options.getString('action', true);
-        const userId = interaction.options.getString('userid', true);
+        const userId = interaction.options.getUser('user', true).id;
 
         const executorId = String(interaction.user.id);
         const ownerCheck = isOwner(executorId);
@@ -62,7 +63,7 @@ export default {
 
         if (mode === 'badge' && !ownerCheck) {
             await interaction.reply({
-                embeds: [embed('🚫 Developer Only', '# Access Denied\n> This operation is reserved for bot developers.', 0xff6b6b)],
+                embeds: [embed(interaction, '🚫 Developer Only', '# Access Denied\n> This operation is reserved for bot developers.', 0xff6b6b)],
                 flags: 64,
             });
             return;
@@ -70,7 +71,7 @@ export default {
 
         if ((mode === 'blacklist' || mode === 'premium') && !modCheck && !ownerCheck) {
             await interaction.reply({
-                embeds: [embed('🚫 No Access!', '# Sorry, cutie!\n> You need to be a bot owner or moderator to use this command.', 0xffb6c1)],
+                embeds: [embed(interaction, '🚫 No Access!', '# Sorry, cutie!\n> You need to be a bot owner or moderator to use this command.', 0xffb6c1)],
                 flags: 64,
             });
             return;
@@ -84,16 +85,16 @@ export default {
                 case 'premium': await handlePremium(interaction, action, userId); break;
                 case 'badge': await handleBadge(interaction, action, userId); break;
                 default:
-                    await interaction.editReply({ embeds: [embed('❌ Invalid Mode', 'Invalid mode specified.', 0xff0000)] });
+                    await interaction.editReply({ embeds: [embed(interaction, '❌ Invalid Mode', 'Invalid mode specified.', 0xff0000)] });
             }
         } catch (err: any) {
-            await interaction.editReply({ embeds: [embed('❌ Error', `An error occurred: \`${err.message}\``, 0xff0000)] });
+            await interaction.editReply({ embeds: [embed(interaction, '❌ Error', `An error occurred: \`${err.message}\``, 0xff0000)] });
         }
     },
 } as Command;
 
-const embed = (title: string, desc: string, color: number) =>
-    new EmbedBuilder().setTitle(title).setDescription('```md\n' + desc + '\n```').setColor(color);
+const embed = (interaction: ChatInputCommandInteraction, title: string, desc: string, color: number) =>
+    baseEmbed(interaction, title, '```md\n' + desc + '\n```', color);
 
 const fetchTag = (client: any, id: string) =>
     client.users.fetch(id).then((u: any) => u.tag).catch(() => 'Unknown User');
@@ -103,25 +104,31 @@ async function handleBlacklist(interaction: ChatInputCommandInteraction, action:
         case 'add': return await blAdd(interaction, userId);
         case 'remove': return await blRemove(interaction, userId);
         case 'check': return await blCheck(interaction, userId);
-        default: return interaction.editReply({ embeds: [embed('❌ Invalid Action', 'Invalid action specified.', 0xff0000)] });
+        default: return interaction.editReply({ embeds: [embed(interaction, '❌ Invalid Action', 'Invalid action specified.', 0xff0000)] });
     }
 }
 
 async function blAdd(interaction: ChatInputCommandInteraction, userId: string) {
     const reason = interaction.options.getString('reason') || 'No reason provided.';
 
-    if (await Users.isBlacklisted(userId)) {
-        await interaction.editReply({
-            embeds: [embed('⚠️ Already Blacklisted', `# User <@${userId}> is already blacklisted.\n> Reason: ${await Users.getBlacklistReason(userId) || 'Unknown'}`, 0xffa500)],
-        });
-        return;
+    {
+        const gate = await Users.getGateData(userId);
+        if (gate.blacklisted) {
+            await interaction.editReply({
+                embeds: [embed(interaction, '⚠️ Already Blacklisted', `# User <@${userId}> is already blacklisted.\n> Reason: ${gate.reason || 'Unknown'}`, 0xffa500)],
+            });
+            return;
+        }
     }
 
+    // blacklist() throws for never-seen users — ensure the doc first.
+    await Users.ensure(userId);
     await Users.blacklist(userId, reason);
 
     const logChannelId = getLogChannel('blacklist');
     if (logChannelId) {
-        interaction.client.channels.fetch(logChannelId).then(async (ch) => {
+        try {
+            const ch = await interaction.client.channels.fetch(logChannelId);
             if (ch instanceof TextChannel) {
                 await ch.send({
                     embeds: [
@@ -140,10 +147,13 @@ async function blAdd(interaction: ChatInputCommandInteraction, userId: string) {
                     ],
                 });
             }
-        }).catch(() => {});
+        } catch {
+            // Logging must never fail the command.
+        }
     }
 
-    interaction.client.users.fetch(userId).then(async (user) => {
+    try {
+        const user = await interaction.client.users.fetch(userId);
         await user.send({
             embeds: [
                 new EmbedBuilder()
@@ -162,27 +172,29 @@ async function blAdd(interaction: ChatInputCommandInteraction, userId: string) {
                 ),
             ],
         });
-    }).catch(() => {});
+    } catch {
+        // Closed DMs are not fatal.
+    }
 
-    await interaction.editReply({ embeds: [embed('✅ Blacklisted', `# <@${userId}> has been blacklisted.\n> Reason: ${reason}`, 0x00ff00)] });
+    await interaction.editReply({ embeds: [embed(interaction, '✅ Blacklisted', `# <@${userId}> has been blacklisted.\n> Reason: ${reason}`, 0x00ff00)] });
 }
 
 async function blRemove(interaction: ChatInputCommandInteraction, userId: string) {
     if (!(await Users.isBlacklisted(userId))) {
-        await interaction.editReply({ embeds: [embed('⚠️ Not Blacklisted', `# <@${userId}> is not blacklisted.`, 0xffa500)] });
+        await interaction.editReply({ embeds: [embed(interaction, '⚠️ Not Blacklisted', `# <@${userId}> is not blacklisted.`, 0xffa500)] });
         return;
     }
     await Users.unblacklist(userId);
-    await interaction.editReply({ embeds: [embed('✅ Unblacklisted', `# <@${userId}> has been removed from the blacklist.`, 0x00ff00)] });
+    await interaction.editReply({ embeds: [embed(interaction, '✅ Unblacklisted', `# <@${userId}> has been removed from the blacklist.`, 0x00ff00)] });
 }
 
 async function blCheck(interaction: ChatInputCommandInteraction, userId: string) {
-    const isBl = await Users.isBlacklisted(userId);
+    const gate = await Users.getGateData(userId);
     await interaction.editReply({
         embeds: [
-            isBl
-                ? embed('🚫 Blacklisted', `# <@${userId}> is blacklisted.\n> Reason: ${await Users.getBlacklistReason(userId) || 'Unknown'}`, 0xff0000)
-                : embed('✅ Not Blacklisted', `# <@${userId}> is not blacklisted.`, 0x00ff00),
+            gate.blacklisted
+                ? embed(interaction, '🚫 Blacklisted', `# <@${userId}> is blacklisted.\n> Reason: ${gate.reason || 'Unknown'}`, 0xff0000)
+                : embed(interaction, '✅ Not Blacklisted', `# <@${userId}> is not blacklisted.`, 0x00ff00),
         ],
     });
 }
@@ -192,7 +204,7 @@ async function handlePremium(interaction: ChatInputCommandInteraction, action: s
         case 'add': return await prAdd(interaction, userId);
         case 'remove': return await prRemove(interaction, userId);
         case 'check': return await prCheck(interaction, userId);
-        default: return interaction.editReply({ embeds: [embed('❌ Invalid Action', 'Invalid action specified.', 0xff0000)] });
+        default: return interaction.editReply({ embeds: [embed(interaction, '❌ Invalid Action', 'Invalid action specified.', 0xff0000)] });
     }
 }
 
@@ -200,21 +212,23 @@ async function prAdd(interaction: ChatInputCommandInteraction, userId: string) {
     const expiryStr = interaction.options.getString('expiry');
 
     if (!expiryStr) {
-        await interaction.editReply({ embeds: [embed('❓ Missing Parameters', '# Premium add requires:\n> expiry: YYYY-MM-DD', 0xffa500)] });
+        await interaction.editReply({ embeds: [embed(interaction, '❓ Missing Parameters', '# Premium add requires:\n> expiry: YYYY-MM-DD', 0xffa500)] });
         return;
     }
 
     const expiry = new Date(expiryStr);
     if (isNaN(expiry.getTime())) {
-        await interaction.editReply({ embeds: [embed('❓ Invalid Expiry', '# Expiry must be a valid date (YYYY-MM-DD).', 0xffa500)] });
+        await interaction.editReply({ embeds: [embed(interaction, '❓ Invalid Expiry', '# Expiry must be a valid date (YYYY-MM-DD).', 0xffa500)] });
         return;
     }
 
-    await Users.update(userId, { tier: 'premium', premiumExpiry: expiry.getTime() });
+    const existing = await Users.ensure(userId);
+    await Users.update(userId, { tier: 'premium', premiumExpiry: expiry.getTime() }, existing);
 
     const logChannelId = getLogChannel('premium');
     if (logChannelId) {
-        interaction.client.channels.fetch(logChannelId).then(async (ch) => {
+        try {
+            const ch = await interaction.client.channels.fetch(logChannelId);
             if (ch instanceof TextChannel) {
                 await ch.send({
                     embeds: [
@@ -233,20 +247,22 @@ async function prAdd(interaction: ChatInputCommandInteraction, userId: string) {
                     ],
                 });
             }
-        }).catch(() => {});
+        } catch {
+            // Logging must never fail the command.
+        }
     }
 
-    await interaction.editReply({ embeds: [embed('✅ Premium Added', `# <@${userId}> now has premium!\n> Expires: ${expiryStr}`, 0x00ff00)] });
+    await interaction.editReply({ embeds: [embed(interaction, '✅ Premium Added', `# <@${userId}> now has premium!\n> Expires: ${expiryStr}`, 0x00ff00)] });
 }
 
 async function prRemove(interaction: ChatInputCommandInteraction, userId: string) {
     const user = await Users.get(userId);
     if (!user || user.tier !== 'premium') {
-        await interaction.editReply({ embeds: [embed('⚠️ Not Premium', `# <@${userId}> does not have premium.`, 0xffa500)] });
+        await interaction.editReply({ embeds: [embed(interaction, '⚠️ Not Premium', `# <@${userId}> does not have premium.`, 0xffa500)] });
         return;
     }
     await Users.update(userId, { tier: 'free', premiumExpiry: null });
-    await interaction.editReply({ embeds: [embed('✅ Premium Removed', `# <@${userId}> has lost premium status.`, 0xffb6c1)] });
+    await interaction.editReply({ embeds: [embed(interaction, '✅ Premium Removed', `# <@${userId}> has lost premium status.`, 0xffb6c1)] });
 }
 
 async function prCheck(interaction: ChatInputCommandInteraction, userId: string) {
@@ -255,7 +271,7 @@ async function prCheck(interaction: ChatInputCommandInteraction, userId: string)
     const expiry = user?.premiumExpiry ? new Date(user.premiumExpiry).toISOString().split('T')[0] : 'N/A';
 
     await interaction.editReply({
-        embeds: [embed('✨ Premium Status', `# <@${userId}>\n> Premium: ${isPremium ? 'Active ✅' : 'Inactive ❌'}\n> Expires: ${isPremium ? expiry : 'N/A'}`, isPremium ? 0xffd700 : 0x808080)],
+        embeds: [embed(interaction, '✨ Premium Status', `# <@${userId}>\n> Premium: ${isPremium ? 'Active ✅' : 'Inactive ❌'}\n> Expires: ${isPremium ? expiry : 'N/A'}`, isPremium ? 0xffd700 : 0x808080)],
     });
 }
 
@@ -263,13 +279,13 @@ async function handleBadge(interaction: ChatInputCommandInteraction, action: str
     const badgeName = interaction.options.getString('badge');
 
     if (!badgeName) {
-        await interaction.editReply({ embeds: [embed('❓ Missing Badge', '# Please specify a badge to add or remove.', 0xffa500)] });
+        await interaction.editReply({ embeds: [embed(interaction, '❓ Missing Badge', '# Please specify a badge to add or remove.', 0xffa500)] });
         return;
     }
 
     const badgeDisplay = getBadge(badgeName);
     if (!badgeDisplay) {
-        await interaction.editReply({ embeds: [embed('❓ Invalid Badge', `# Badge \`${badgeName}\` does not exist.`, 0xffa500)] });
+        await interaction.editReply({ embeds: [embed(interaction, '❓ Invalid Badge', `# Badge \`${badgeName}\` does not exist.`, 0xffa500)] });
         return;
     }
 
@@ -277,7 +293,7 @@ async function handleBadge(interaction: ChatInputCommandInteraction, action: str
         case 'add': return await bgAdd(interaction, userId, badgeName, badgeDisplay);
         case 'remove': return await bgRemove(interaction, userId, badgeName, badgeDisplay);
         case 'check': return await bgCheck(interaction, userId);
-        default: return interaction.editReply({ embeds: [embed('❌ Invalid Action', 'Invalid action specified.', 0xff0000)] });
+        default: return interaction.editReply({ embeds: [embed(interaction, '❌ Invalid Action', 'Invalid action specified.', 0xff0000)] });
     }
 }
 
@@ -298,7 +314,7 @@ async function bgAdd(interaction: ChatInputCommandInteraction, userId: string, b
 async function bgRemove(interaction: ChatInputCommandInteraction, userId: string, badgeName: string, badgeDisplay: string) {
     const user = await Users.get(userId);
     if (!user?.badges.includes(badgeName)) {
-        await interaction.editReply({ embeds: [embed('❓ No Badge', `# <@${userId}> does not have the \`${badgeName}\` badge.`, 0xffa500)] });
+        await interaction.editReply({ embeds: [embed(interaction, '❓ No Badge', `# <@${userId}> does not have the \`${badgeName}\` badge.`, 0xffa500)] });
         return;
     }
     await Users.removeBadge(userId, badgeName);
@@ -319,7 +335,7 @@ async function bgCheck(interaction: ChatInputCommandInteraction, userId: string)
     const badges = user?.badges ?? [];
 
     if (!badges.length) {
-        await interaction.editReply({ embeds: [embed('❓ No Badges', `# <@${userId}> has no badges.`, 0xffa500)] });
+        await interaction.editReply({ embeds: [embed(interaction, '❓ No Badges', `# <@${userId}> has no badges.`, 0xffa500)] });
         return;
     }
 

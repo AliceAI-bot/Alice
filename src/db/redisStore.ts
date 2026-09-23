@@ -203,8 +203,9 @@ export async function persistTurn(
  */
 export async function trimSessionToTail(key: string, keepLast: number): Promise<void> {
     try {
-        await redisClient.lTrim(key, -keepLast, -1);
+        // Single round trip: trim + refresh both TTLs atomically.
         const tx = redisClient.multi();
+        tx.lTrim(key, -keepLast, -1);
         tx.expire(key, SESSION_TTL_SECONDS);
         tx.expire(summaryKey(key), SUMMARY_TTL_SECONDS);
         await tx.exec();
@@ -223,6 +224,21 @@ export async function setIgnored(userId: string, durationMs: number): Promise<vo
     await redisClient.set(ignoredKey(userId), String(Date.now() + durationMs), { PX: durationMs });
 }
 
+function ignoreWarnedKey(userId: string): string {
+    return `${IGNORED_PREFIX}warned:${userId}`;
+}
+
 export async function clearIgnored(userId: string): Promise<void> {
-    await redisClient.del(ignoredKey(userId));
+    await redisClient.del([ignoredKey(userId), ignoreWarnedKey(userId)]);
+}
+
+/**
+ * One-shot cold-line gate: true on first call per ignore window (caller should
+ * send the single "won't reply until you apologize" line), false after.
+ * Single RTT via SET NX PX — no GET needed.
+ */
+export async function markIgnoreWarned(userId: string, ttlMs: number): Promise<boolean> {
+    const ttl = Math.max(1000, Math.min(ttlMs, 30 * 60 * 1000));
+    const res = await redisClient.set(ignoreWarnedKey(userId), '1', { PX: ttl, NX: true });
+    return res !== null;
 }

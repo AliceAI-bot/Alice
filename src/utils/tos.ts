@@ -29,6 +29,7 @@ export function createTosEmbed(): { embeds: EmbedBuilder[]; components: ActionRo
 }
 
 export async function handleTosButton(interaction: MessageComponentInteraction): Promise<void> {
+    // Edit in place and leave the receipt visible — no fragile deleteReply timer.
     if (interaction.customId === 'accept_tos') {
         await Users.ensure(interaction.user.id);
         await interaction.update({
@@ -36,7 +37,6 @@ export async function handleTosButton(interaction: MessageComponentInteraction):
             embeds: [],
             components: [],
         });
-        setTimeout(() => interaction.deleteReply().catch(() => null), 5000);
         return;
     }
 
@@ -46,7 +46,6 @@ export async function handleTosButton(interaction: MessageComponentInteraction):
             embeds: [],
             components: [],
         });
-        setTimeout(() => interaction.deleteReply().catch(() => null), 5000);
         return;
     }
 }

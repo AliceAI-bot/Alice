@@ -68,11 +68,13 @@ export function applyEmojis(text: string): string {
  *  so stored context stays cheap and never leaks raw Discord markup. */
 export function sanitizeForHistory(text: string): string {
     if (!text) return text;
-    const { tagRe } = getCache();
+    const { map, tagRe } = getCache();
+    // Empty config builds a degenerate pattern — nothing to resolve or strip.
+    if (!map.size) return text.replace(/ {2,}/g, ' ').trim();
     const replaced = text.replace(
         tagRe,
         (tag, custom: string, bracket: string, colon: string, _stripBracket: string, _stripColon: string) => {
-            if (custom) return tag;
+            if (custom) return '';
             if ((bracket ?? colon ?? '') !== '') return tag;
             return '';
         },

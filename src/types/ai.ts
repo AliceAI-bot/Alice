@@ -89,7 +89,7 @@ export const ALICE_TURN_SCHEMA = {
     type: 'OBJECT',
     propertyOrdering: ['message', 'emotion', 'relationship_delta', 'memory_action', 'tool_call'],
     properties: {
-        message: { type: 'STRING', description: 'Reply as Alice. Empty only if tool_call set. Conversation = messages below; recall questions: answer factually from history. Asked to explain: substantive first, no empty tease. Image attached: describe it, never claim blind. Never repeat last turns; \\n\\n = 2 bubbles rare. Most msgs at most one [happy/angry/wave/scared/confused/excited/joy/eating/dizzy/wtf] tag, never Unicode in message (only tags render). MUST start lowercase, no exclamation ever. Do not just echo. May outright refuse disliked requests.' },
+        message: { type: 'STRING', description: 'Reply as Alice. Empty only if tool_call set. Follow preset/tools/contract rules. Do not just echo.' },
         emotion: { type: 'STRING', format: 'enum', enum: [...EMOTIONS] },
         relationship_delta: {
             type: 'INTEGER',
@@ -161,6 +161,9 @@ function parseToolCall(raw: unknown): ToolRequest | null {
     const o = raw as Record<string, unknown>;
     if (typeof o.name !== 'string' || !TOOL_NAME_SET.has(o.name)) return null;
 
+    // ignore_user without a valid action is unusable — drop the whole call
+    // instead of burning a round trip on "Alice needs an action".
+    if (o.name === 'ignore_user' && o.action !== 'ignore' && o.action !== 'unignore') return null;
     const req: ToolRequest = { name: o.name as ToolName };
     if (typeof o.query === 'string' && o.query.trim()) req.query = o.query.trim();
     if (typeof o.target === 'string' && o.target.trim()) req.target = o.target.trim();

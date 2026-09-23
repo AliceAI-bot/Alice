@@ -44,7 +44,7 @@ export class CustomClient extends Client {
             for (const [key, expiry] of this.cooldowns) {
                 if (expiry <= now) this.cooldowns.delete(key);
             }
-        }, 60 * 60 * 1000).unref();
+        }, 60 * 1000).unref();
     }
 } 
 
@@ -109,7 +109,9 @@ export async function loginClient(client: CustomClient, token: string): Promise<
     }
 }
 
-let readyClusters = 0;
+// Idempotent set — add/delete can't drift the way a ++/-- counter does
+// across recluster/exit races.
+const readyClusterIds = new Set<number>();
 
 export async function startManager(options: ManagerOptions): Promise<void> {
     const {
@@ -127,17 +129,28 @@ export async function startManager(options: ManagerOptions): Promise<void> {
     });
 
     manager.extend(new ReClusterManager());
-    manager.extend(new HeartbeatManager({ interval: 2000, maxMissedHeartbeats: 3 }));
+    // 6s death tolerance false-positives under GC/loop lag — 50s is plenty.
+    manager.extend(new HeartbeatManager({ interval: 10000, maxMissedHeartbeats: 5 }));
+
+    // Single init, in the MANAGER process — scheduleStats/poststats run here.
+    // (Worker-side init would only touch worker memory, where the SDK is unused.)
+    if (topGGToken) {
+        try {
+            initTopGG(topGGToken);
+        } catch (error) {
+            console.error("Top.gg init failed — stats posting disabled:", error instanceof Error ? error.message : error);
+        }
+    }
 
     manager.on("clusterCreate", (cluster) => {
         console.log(`Cluster ${cluster.id} spawned`);
 
         cluster.on("ready", async () => {
-            readyClusters++;
-            console.log(`Cluster ${cluster.id} ready (${readyClusters}/${manager.totalClusters})`);
-            if (readyClusters === manager.totalClusters) {
+            readyClusterIds.add(cluster.id);
+            console.log(`Cluster ${cluster.id} ready (${readyClusterIds.size}/${manager.totalClusters})`);
+            if (readyClusterIds.size === manager.totalClusters) {
                 await updatePresence(manager, topGGToken);
-                if (topGGToken) scheduleStats(manager, topGGToken);
+                if (topGGToken) scheduleStats(manager);
             }
         });
 
@@ -153,7 +166,7 @@ export async function startManager(options: ManagerOptions): Promise<void> {
         });
 
         cluster.on("exit", (code, signal) => {
-            readyClusters = Math.max(0, readyClusters - 1);
+            readyClusterIds.delete(cluster.id);
             console.warn(`Cluster ${cluster.id} exited with code ${code} (signal: ${signal})`);
         });
     });
@@ -199,8 +212,8 @@ async function broadcastTotals(manager: ClusterManager): Promise<{ guilds: numbe
     };
 }
 
-function scheduleStats(manager: ClusterManager, topGGToken: string): void {
-    initTopGG(topGGToken);
+function scheduleStats(manager: ClusterManager): void {
+    // Top.gg is initialized once in bot/index.ts — never re-init here.
 
     const post = async () => {
         try {
@@ -264,13 +277,18 @@ function presenceForNow(): { name: string; status: "online" | "idle" } {
 }
 
 let presenceTimer: NodeJS.Timeout | null = null;
+let presenceManager: ClusterManager | null = null;
 
 function startPresenceRotation(manager: ClusterManager): void {
+    // Always track the latest manager — a reclustered fleet must not rotate
+    // presence through a stale handle.
+    presenceManager = manager;
     if (presenceTimer) return;
     const rotate = async () => {
+        if (!presenceManager) return;
         try {
             const { name, status } = presenceForNow();
-            await manager.broadcastEval(
+            await presenceManager.broadcastEval(
                 (client, ctx) => {
                     if (!client.user) return;
                     client.user.setPresence({
@@ -289,5 +307,3 @@ function startPresenceRotation(manager: ClusterManager): void {
     presenceTimer.unref?.();
     setTimeout(() => void rotate(), 20 * 60 * 1000).unref?.();
 }
-
-// ballz

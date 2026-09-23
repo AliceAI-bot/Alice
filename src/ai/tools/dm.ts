@@ -19,6 +19,12 @@ export async function executeDm(ctx: ToolContext, args: Record<string, unknown>)
     const content = typeof args.message === 'string' && args.message.trim() ? args.message.trim() : '';
     if (!content) return "Alice can't send an empty DM.";
 
+    // No silent first-mention pick: DMing the wrong person is worse than asking.
+    if (typeof args.target !== 'string' || !args.target.trim()) {
+        const candidates = ctx.message.mentions.users.filter((u) => u.id !== ctx.requesterId && !u.bot);
+        if (candidates.size > 1) return 'Multiple people mentioned — say exactly who gets the DM.';
+    }
+
     const targetId = resolveToolTargetId(ctx, args);
 
     if (targetId === ctx.requesterId) {

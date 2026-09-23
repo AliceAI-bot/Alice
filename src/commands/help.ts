@@ -2,34 +2,11 @@ import {
     SlashCommandBuilder,
     ActionRowBuilder,
     StringSelectMenuBuilder,
-    EmbedBuilder,
-    ButtonBuilder,
-    ButtonStyle,
     version as discordVersion,
 } from 'discord.js';
 import { cpus, totalmem, freemem } from 'os';
 import type { Command } from '../types/index.js';
-
-const createButtonRow = (botId: string) => {
-    return new ActionRowBuilder<ButtonBuilder>()
-        .addComponents(
-            new ButtonBuilder()
-                .setStyle(ButtonStyle.Link)
-                .setLabel('Add to Server')
-                .setURL(`https://discord.com/oauth2/authorize?client_id=${botId}&permissions=140126800960&scope=bot`)
-                .setEmoji('➕'),
-            new ButtonBuilder()
-                .setStyle(ButtonStyle.Link)
-                .setLabel('Support Server')
-                .setURL('https://discord.gg/j2wh9ctD9N')
-                .setEmoji('💫'),
-            new ButtonBuilder()
-                .setStyle(ButtonStyle.Link)
-                .setLabel('Vote on Top.gg')
-                .setURL(`https://top.gg/bot/${botId}/vote`)
-                .setEmoji('⭐'),
-        );
-};
+import { baseEmbed, inviteRow } from '../utils/embeds.js';
 
 export default {
     data: new SlashCommandBuilder()
@@ -42,21 +19,14 @@ export default {
     execute: async (interaction) => {
         await interaction.deferReply();
 
-        const embed = new EmbedBuilder()
-            .setTitle('💡 Help Menu')
-            .setDescription(
-                '```md\n# Available Categories\n' +
+        const embed = baseEmbed(
+            interaction,
+            '💡 Help Menu',
+            '```md\n# Available Categories\n' +
                 '✨ Commands    - Available commands\n' +
                 '🤖 Bot Info    - Information about Alice\n```\n' +
-                '> Select a category below to view more!'
-            )
-            .setColor('#FFD700')
-            .setThumbnail(interaction.client.user?.displayAvatarURL())
-            .setTimestamp()
-            .setFooter({
-                text: `Requested by ${interaction.user.tag}`,
-                iconURL: interaction.user.displayAvatarURL(),
-            });
+                '> Select a category below to view more!',
+        );
 
         const selectMenu = new StringSelectMenuBuilder()
             .setCustomId('help_select')
@@ -77,49 +47,60 @@ export default {
             ]);
 
         const menuRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
-        const buttonRow = createButtonRow(interaction.client.user?.id ?? '');
+        const buttonRow = inviteRow(interaction.client.user?.id ?? '');
 
-        await interaction.followUp({
+        const reply = await interaction.followUp({
             embeds: [embed],
             components: [menuRow, buttonRow],
         });
 
         try {
             const filter = (i: any) => i.customId === 'help_select' && i.user.id === interaction.user.id;
-            const collector = interaction.channel?.createMessageComponentCollector({
+            // Message-scoped: concurrent /help calls never see each other's selects.
+            const collector = reply.createMessageComponentCollector({
                 filter,
                 time: 60000,
             });
 
-            collector?.on('collect', async (i: any) => {
-                const selectedValue = i.values[0];
-                const newEmbed = new EmbedBuilder()
-                    .setColor('#FFD700')
-                    .setThumbnail(interaction.client.user?.displayAvatarURL())
-                    .setTimestamp()
-                    .setFooter({
-                        text: `Requested by ${interaction.user.tag}`,
-                        iconURL: interaction.user.displayAvatarURL(),
-                    });
+            // AI-related commands get their own section; dev-only (global:false)
+            // commands never appear here.
+            const AI_COMMANDS = new Set(['chat', 'reset_session', 'byok']);
 
-                switch (selectedValue) {
-                    case 'commands':
+            collector?.on('collect', async (i: any) => {
+                try {
+                    const selectedValue = i.values[0];
+                    const newEmbed = baseEmbed(interaction, '', '');
+
+                    switch (selectedValue) {
+                    case 'commands': {
+                        const cmds = ((interaction.client as any).slashCommands?.values?.() ?? []) as Array<{
+                            data?: { name?: string; description?: string };
+                            global?: boolean;
+                        }>;
+                        const listed = [...cmds]
+                            .filter((c) => c?.data?.name && c.global !== false)
+                            .sort((a, b) => (a.data!.name! < b.data!.name! ? -1 : 1));
+                        const describe = (c: { data?: { name?: string; description?: string } }) =>
+                            `\`/${c.data!.name!}\` • ${c.data!.description ?? ''}`.trim();
+                        const utility = listed.filter((c) => !AI_COMMANDS.has(c.data!.name!)).map(describe);
+                        const ai = listed.filter((c) => AI_COMMANDS.has(c.data!.name!)).map(describe);
                         newEmbed
                             .setTitle('✨ Commands')
                             .setDescription('```md\n# Available Commands```')
                             .addFields(
                                 {
                                     name: '🎯 Utility',
-                                    value: [
-                                        '`/ping` • Check bot latency',
-                                        '`/invite` • Invite Alice to your server',
-                                        '`/help` • Show this help menu',
-                                        '`/profile` • View your or another user\'s profile',
-                                    ].join('\n'),
+                                    value: utility.length ? utility.join('\n') : '> Nothing here yet',
                                     inline: false,
-                                }
+                                },
+                                {
+                                    name: '🤖 AI',
+                                    value: ai.length ? ai.join('\n') : '> Nothing here yet',
+                                    inline: false,
+                                },
                             );
                         break;
+                    }
 
                     case 'info':
                         const botUser = interaction.client.user!;
@@ -245,6 +226,13 @@ export default {
                     embeds: [newEmbed],
                     components: [menuRow, buttonRow],
                 }).catch(console.error);
+                } catch (error) {
+                    console.error('Error handling help select:', error);
+                    await i.reply({
+                        content: 'Something went wrong showing that section — try again.',
+                        flags: 64,
+                    }).catch(() => null);
+                }
             });
 
             collector?.on('end', () => {

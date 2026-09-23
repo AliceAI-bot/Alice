@@ -1,7 +1,6 @@
 import { ClusterClient, messageType } from 'discord-hybrid-sharding';
 import { createClient, loginClient, CustomClient } from './client.js';
 import { loadEnv } from '../config/env.js';
-import { initTopGG } from '../integrations/TopGG.js';
 import { ready } from './loader.js';
 import { initDB } from '../db/database.js';
 
@@ -11,7 +10,6 @@ if (!token) {
     process.exit(1);
 }
 
-const topGGToken = loadEnv('DBL_Token');
 let clientInstance: CustomClient | undefined;
 
 const BOOT_TIMEOUT_MS = 30_000;
@@ -35,10 +33,6 @@ export async function runner() {
     try {
         clientInstance = await createClient();
         clientInstance.cluster = new ClusterClient(clientInstance);
-
-        if (topGGToken) {
-            initTopGG(topGGToken);
-        }
 
         clientInstance.once('clientReady', async (readyClient) => {
             console.log(`Shard ${clientInstance!.cluster!.info.SHARD_LIST.join(',')} ready as ${readyClient.user.tag}`);

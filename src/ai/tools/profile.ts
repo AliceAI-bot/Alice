@@ -36,12 +36,16 @@ export async function executeProfile(ctx: ToolContext, args: Record<string, unkn
                 : `last talked ${formatTimeGap(Date.now() - rel.lastInteractionAt)}`;
         const memories = (user.memories ?? []).slice(-5);
 
-        // Open loops live per-channel: peek at the current channel's summary.
-        const ch = ctx.message.channel;
-        const isDM = typeof ch?.isDMBased === 'function' && ch.isDMBased();
-        const key = sessionKey(isDM ? null : (ctx.message.guildId ?? null), ctx.message.channelId);
-        const summary = await getSessionSummary(key).catch(() => null);
-        const loops = (summary?.openLoops ?? []).slice(0, 3);
+        // Open loops live per-channel and belong to whoever is in it — only
+        // include them when looking up the requester themselves.
+        let loops: string[] = [];
+        if (targetId === ctx.requesterId) {
+            const ch = ctx.message.channel;
+            const isDM = typeof ch?.isDMBased === 'function' && ch.isDMBased();
+            const key = sessionKey(isDM ? null : (ctx.message.guildId ?? null), ctx.message.channelId);
+            const summary = await getSessionSummary(key).catch(() => null);
+            loops = (summary?.openLoops ?? []).slice(0, 3);
+        }
 
         const lines = [
             `${username}: ${status}, ${band} bond, ${gap}.`,

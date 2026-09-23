@@ -17,8 +17,6 @@ export const initTopGG = (token: string): Api => {
     return apiInstance;
 };
 
-export const getTopggApi = (): Api | null => apiInstance;
-
 export const poststats = async (serverCount: number, shardCount?: number): Promise<void> => {
     if (!apiInstance) {
         throw new Error("Top.gg API not initialized. Call initTopGG(token) first.");

@@ -41,7 +41,8 @@ async function queryTopggVote(userId: string): Promise<boolean | null> {
     if (now < failingUntil) return null;
 
     const token = loadEnv('DBL_Token');
-    if (!token) return false;
+    // Empty token is misconfiguration/unknown — never a definitive not-voted.
+    if (!token) return null;
 
     // v1 requires the Bearer prefix.
     const auth = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
@@ -60,7 +61,9 @@ async function queryTopggVote(userId: string): Promise<boolean | null> {
     if (res.ok) {
         try {
             const data = (await res.json()) as { expires_at?: string };
-            return Boolean(data.expires_at && Date.parse(data.expires_at) > now);
+            const expires = data.expires_at ? Date.parse(data.expires_at) : NaN;
+            if (!Number.isFinite(expires)) return backoff('malformed v1 response');
+            return expires > now;
         } catch {
             return backoff('malformed v1 response');
         }
@@ -111,7 +114,8 @@ export async function checkVoteCached(
     try {
         state.vote = { voted, checkedAt: Date.now() };
         await saveUserState(userId, state);
-    } catch {
+    } catch (error) {
+        console.error(`[votes] persisting vote for ${userId} failed:`, error instanceof Error ? error.message : error);
     }
 
     return voted;

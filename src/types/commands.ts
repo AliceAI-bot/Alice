@@ -3,7 +3,6 @@ import {
     SlashCommandBuilder,
     SlashCommandSubcommandsOnlyBuilder,
     ContextMenuCommandBuilder,
-    PermissionResolvable,
     AutocompleteInteraction,
 } from 'discord.js';
 
@@ -13,6 +12,5 @@ export interface Command {
     global?: boolean;
     cooldown?: number;
 
-    permissions?: PermissionResolvable[];
     autocomplete?: (interaction: AutocompleteInteraction) => Promise<void>;
 }

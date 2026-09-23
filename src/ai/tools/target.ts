@@ -3,7 +3,7 @@ import type { ToolContext } from '../../types/ai.js';
 const TARGET_RE = /<@!?(\d+)>/;
 const RAW_ID_RE = /^\d{10,25}$/;
 
-export function extractMentionId(target: unknown): string | null {
+function extractMentionId(target: unknown): string | null {
     if (typeof target !== 'string') return null;
     const match = target.match(TARGET_RE);
     if (match?.[1]) return match[1];

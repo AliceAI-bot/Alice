@@ -1,7 +1,6 @@
 import {
     SlashCommandBuilder,
     ChatInputCommandInteraction,
-    EmbedBuilder,
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
@@ -13,14 +12,8 @@ import {
 } from 'discord.js';
 import { Users } from '../db/database.js';
 import { keycheck } from '../integrations/google.js';
+import { baseEmbed, EMBED_COLORS as COLORS } from '../utils/embeds.js';
 import type { Command } from '../types/index.js';
-
-const COLORS = {
-    primary: 0xFFD700,
-    success: 0x00FF88,
-    error: 0xFF4444,
-    warning: 0xFFAA00,
-};
 
 const INFO_DESCRIPTION = [
     '# Bring Your Own Key',
@@ -37,17 +30,7 @@ const INFO_DESCRIPTION = [
     '> ONLY used for your own requests. It is never shared.',
 ].join('\n');
 
-function createEmbed(interaction: { client: ChatInputCommandInteraction['client']; user: ChatInputCommandInteraction['user'] }, title: string, description: string, color: number = COLORS.primary) {
-    return new EmbedBuilder()
-        .setTitle(title)
-        .setDescription(description)
-        .setColor(color)
-        .setThumbnail(interaction.client.user?.displayAvatarURL() ?? null)
-        .setFooter({
-            text: `Requested by ${interaction.user.tag}`,
-            iconURL: interaction.user.displayAvatarURL(),
-        });
-}
+const createEmbed = baseEmbed;
 
 async function buildByokPayload(interaction: ChatInputCommandInteraction | ButtonInteraction, opts: { removed?: boolean } = {}) {
     const user = await Users.get(interaction.user.id);
@@ -58,14 +41,7 @@ async function buildByokPayload(interaction: ChatInputCommandInteraction | Butto
         ? '```md\n# Your Gemini API key has been removed.\n> The embed above has been reset.\n> Hit Add Your Key to connect a new one anytime.\n```'
         : '```md\n' + INFO_DESCRIPTION + '\n```';
 
-    const embed = new EmbedBuilder()
-        .setTitle(title)
-        .setDescription(description)
-        .setColor(opts.removed ? COLORS.success : COLORS.primary)
-        .setFooter({
-            text: `Requested by ${interaction.user.tag}`,
-            iconURL: interaction.user.displayAvatarURL(),
-        });
+    const embed = baseEmbed(interaction, title, description, opts.removed ? COLORS.success : COLORS.primary);
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
@@ -127,7 +103,13 @@ export async function handleByokButton(interaction: ButtonInteraction): Promise<
 
     if (interaction.customId.startsWith('byok_remove')) {
         await interaction.deferUpdate();
-        await Users.update(interaction.user.id, { tier: 'free', byokKey: null });
+        // Removing a key must not strip paid premium.
+        const existing = await Users.ensure(interaction.user.id);
+        await Users.update(
+            interaction.user.id,
+            { tier: existing.tier === 'premium' ? 'premium' : 'free', byokKey: null },
+            existing,
+        );
         const payload = await buildByokPayload(interaction, { removed: true });
         await interaction.editReply(payload);
     }
@@ -138,7 +120,7 @@ export async function handleByokModal(interaction: ModalSubmitInteraction): Prom
 
     const key = interaction.fields.getTextInputValue('byok_key').trim();
 
-    const user = await Users.get(interaction.user.id);
+    const user = await Users.ensure(interaction.user.id);
     if (user?.byokKey) {
         await interaction.editReply({
             embeds: [createEmbed(interaction, '⚠️ Already Set', '```md\n# You already have a BYOK key saved.\n> Use /byok and hit Remove Key first if you want to change it.\n```', COLORS.warning)],
@@ -154,7 +136,7 @@ export async function handleByokModal(interaction: ModalSubmitInteraction): Prom
         return;
     }
 
-    await Users.update(interaction.user.id, { tier: 'byok', byokKey: key });
+    await Users.update(interaction.user.id, { tier: 'byok', byokKey: key }, user);
 
     await interaction.editReply({
         embeds: [createEmbed(interaction, '✅ Key Saved', '```md\n# Your BYOK key is set and encrypted.\n> It will only be used for your requests. Enjoy!\n```', COLORS.success)],

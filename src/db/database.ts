@@ -1,4 +1,4 @@
-import { DocumentNotFoundError, PathNotFoundError, Collection, MutateInSpec } from 'couchbase';
+import { DocumentExistsError, DocumentNotFoundError, PathNotFoundError, Collection, MutateInSpec } from 'couchbase';
 import CouchbaseClient from '../integrations/couchbase.js';
 import { encrypt, decrypt, hashKey } from '../integrations/crypto.js';
 import { RelationshipState, createRelationship } from '../utils/relationship.js';
@@ -145,7 +145,15 @@ class UsersModel {
             blacklistReason: null,
         };
 
-        await this.collection.insert(hashKey(userId), fresh);
+        try {
+            await this.collection.insert(hashKey(userId), fresh);
+        } catch (err) {
+            // Lost the first-seen race with another process — read their doc.
+            if (!(err instanceof DocumentExistsError)) throw err;
+            const winner = await this.get(userId);
+            if (!winner) throw err;
+            return winner;
+        }
         userCacheSet(userId, fresh);
         return cloneUser(fresh);
     }
@@ -199,17 +207,16 @@ class UsersModel {
             await this.collection.mutateIn(hashKey(userId), specs);
         } catch (err) {
             if (!(err instanceof PathNotFoundError)) throw err;
+            // update() refreshes the cache with this exact patch — no extra patching.
             await this.update(
                 userId,
                 {
                     relationship: rel,
                     ...(memories ? { memories } : {}),
+                    stats: { ..._base.stats, messagesSent: _base.stats.messagesSent + 1 },
                 },
                 _base,
             );
-            userCachePatch(userId, (data) => {
-                data.stats.messagesSent += 1;
-            });
             return;
         }
 
@@ -228,6 +235,7 @@ class UsersModel {
             await this.collection.mutateIn(hashKey(userId), specs);
         } catch (err) {
             if (!(err instanceof PathNotFoundError)) throw err;
+            // update() refreshes the cache with this exact patch — no extra patching.
             await this.update(
                 userId,
                 {

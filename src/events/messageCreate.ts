@@ -195,8 +195,14 @@ export default {
 
         const clientId = client.user?.id;
         const mentioned = Boolean(clientId && message.mentions.has(clientId, { ignoreEveryone: true }));
+        // Threads inherit the parent channel's config — otherwise threads in an
+        // enabled channel always require a mention.
+        const threadParent = (channel as { isThread?: () => boolean; parentId?: string | null }).isThread?.()
+            ? ((channel as { parentId?: string | null }).parentId ?? null)
+            : null;
+        const personaChannelId = threadParent ?? message.channelId;
         const persona =
-            isDM || !message.guildId ? null : await Guilds.getChannel(message.guildId, message.channelId);
+            isDM || !message.guildId ? null : await Guilds.getChannel(message.guildId, personaChannelId);
         if (!isDM && persona === null && !mentioned) return;
 
         const key = batchKeyFor(message);
@@ -213,9 +219,21 @@ export default {
             for (;;) {
                 const queued = drainPending(key);
                 if (!queued.length) break;
-                const merged = mergeQueued(queued);
-                if (!merged) continue;
-                await handleTurn(merged.message, client, merged.channel ?? channel, persona, false);
+                try {
+                    const merged = mergeQueued(queued);
+                    if (!merged) continue;
+                    // Config may have changed mid-generation — re-resolve per turn.
+                    const freshPersona =
+                        isDM || !message.guildId
+                            ? null
+                            : await Guilds.getChannel(message.guildId, personaChannelId).catch(() => persona);
+                    await handleTurn(merged.message, client, merged.channel ?? channel, freshPersona, false);
+                } catch {
+                    // Never drop user messages: re-queue leftovers for the next turn.
+                    const leftover = drainPending(key);
+                    pendingBatches.set(key, [...queued, ...leftover]);
+                    break;
+                }
             }
         } finally {
             pendingBatches.delete(key);
@@ -231,15 +249,16 @@ async function handleTurn(
     persona: string | null,
     checkCooldown: boolean,
 ): Promise<void> {
+    const cooldownKey = `${message.author.id}:ai`;
     if (checkCooldown) {
-        const cooldownKey = `${message.author.id}:ai`;
         const now = Date.now();
         const expirationTime = client.cooldowns.get(cooldownKey);
         if (expirationTime && now < expirationTime) {
             await safeReply(message, cooldownLine());
             return;
         }
-        client.cooldowns.set(cooldownKey, now + AI_COOLDOWN_MS);
+        // Set below only after a real reply — ToS blocks, blacklists and
+        // failures must not consume the user's cooldown.
     }
 
     try {
@@ -260,6 +279,7 @@ async function handleTurn(
             onThinking: () => startTyping(channel),
         });
         if (!response?.content) return;
+        client.cooldowns.set(cooldownKey, Date.now() + AI_COOLDOWN_MS);
 
         // Tiny human jitter — stays snappy (300-900ms), just enough to feel typed.
         await sleep(300 + Math.random() * 600);

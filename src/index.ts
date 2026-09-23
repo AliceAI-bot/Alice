@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { loadEnv } from './config/env.js';
 import { startManager } from './bot/client.js';
 
@@ -11,7 +12,7 @@ const topGGToken = loadEnv('DBL_Token') || null;
 
 startManager({
     token,
-    mainFile: './dist/src/bot/index.js',
+    mainFile: path.join(process.cwd(), 'dist', 'src', 'bot', 'index.js'),
     shardsPerClusters: 4,
     topGGToken,
 });

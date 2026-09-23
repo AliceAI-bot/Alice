@@ -2,6 +2,9 @@ import { randomBytes, createCipheriv, createDecipheriv, scryptSync, createHash }
 import { loadEnv } from '../config/env.js';
 
 const password = loadEnv('encryption_key');
+if (!password) {
+    throw new Error('Missing encryption_key in .env — refusing to encrypt with a weak fallback key.');
+}
 let cachedKey: Buffer | null = null;
 
 function getKey(): Buffer {
@@ -50,7 +53,4 @@ export function decrypt(encrypted: string): string {
 
 export function hashKey(data: string): string {
     return createHash('sha256').update(data).digest('hex');
-}  // putting this function here cuz ig it does the similar job
-
-
-// people in the support server are wierd, i think they might be pregnent
+}

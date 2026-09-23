@@ -2,37 +2,39 @@ import {
     SlashCommandBuilder,
     ChatInputCommandInteraction,
     AutocompleteInteraction,
-    EmbedBuilder,
     ChannelType,
     PermissionsBitField,
 } from 'discord.js';
 import { Guilds } from '../db/database.js';
 import { getAvailablePersonas } from '../utils/personaLoader.js';
 import { isVoter } from '../utils/voterCheck.js';
+import { baseEmbed, EMBED_COLORS as COLORS } from '../utils/embeds.js';
 import type { Command } from '../types/index.js';
 
-const COLORS = {
-    primary: 0xFFD700,
-    success: 0x00FF88,
-    error: 0xFF4444,
-    warning: 0xFFAA00,
-    info: 0xB7EFFF,
-};
-// things are not looking very sigma
-function createEmbed(interaction: { client: ChatInputCommandInteraction['client']; user: ChatInputCommandInteraction['user'] }, title: string, description: string, color: number = COLORS.primary) {
-    return new EmbedBuilder()
-        .setTitle(title)
-        .setDescription(description)
-        .setColor(color)
-        .setThumbnail(interaction.client.user?.displayAvatarURL() ?? null)
-        .setFooter({ 
-            text: `Requested by ${interaction.user.tag}`,
-            iconURL: interaction.user.displayAvatarURL() 
-        });
-}
+const createEmbed = baseEmbed;
 
 function checkAdminPerms(interaction: ChatInputCommandInteraction): boolean {
     return interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageChannels) ?? false;
+}
+
+/** Shared persona validation for enable/update. Returns the persona or null after replying. */
+async function resolvePersona(interaction: ChatInputCommandInteraction): Promise<string | null> {
+    const persona = interaction.options.getString('personality') ?? '';
+    const personas = await getAvailablePersonas();
+    if (!personas.length) {
+        await interaction.editReply({
+            embeds: [createEmbed(interaction, '❌ No Personas Installed', '```md\n# No persona files found\n> Expected: src/ai/instructions/Persona/*.txt\n```', COLORS.error)],
+        });
+        return null;
+    }
+    if (!persona || !personas.includes(persona)) {
+        const available = personas.map((p) => '`' + p + '`').join(', ');
+        await interaction.editReply({
+            embeds: [createEmbed(interaction, '❌ Invalid Persona', '```md\n# `' + (persona || '(none)') + '` is not a valid persona\n\nAvailable: ' + available + '\n```', COLORS.error)],
+        });
+        return null;
+    }
+    return persona;
 }
 
 export default {
@@ -84,11 +86,19 @@ export default {
             return;
         }
 
+        if (!interaction.guildId) {
+            await interaction.reply({
+                embeds: [createEmbed(interaction, '❌ Server Only', '```md\n# This command only works in a server\n```', COLORS.error)],
+                flags: 64,
+            });
+            return;
+        }
+
         await interaction.deferReply({ flags: 64 });
 
         const action = interaction.options.getString('action', true);
         const channel = interaction.options.getChannel('channel', true);
-        const guildId = interaction.guildId!;
+        const guildId = interaction.guildId;
 
         try {
             switch (action) {
@@ -128,22 +138,8 @@ export default {
 } as Command;
 
 async function handleEnable(interaction: ChatInputCommandInteraction, guildId: string, channelId: string): Promise<void> {
-    const persona = interaction.options.getString('personality', true);
-
-    const personas = await getAvailablePersonas();
-    if (!personas.length) {
-        await interaction.editReply({
-            embeds: [createEmbed(interaction, '❌ No Personas Installed', '```md\n# No persona files found\n> Expected: src/ai/instructions/Persona/*.txt\n> This release ships `default.txt` only — make sure it is present.\n```', COLORS.error)],
-        });
-        return;
-    }
-    if (!personas.includes(persona)) {
-        const available = personas.map(p => '`' + p + '`').join(', ');
-        await interaction.editReply({
-            embeds: [createEmbed(interaction, '❌ Invalid Persona', '```md\n# `' + persona + '` is not a valid persona\n\nAvailable: ' + available + '\n```', COLORS.error)],
-        });
-        return;
-    }
+    const persona = await resolvePersona(interaction);
+    if (!persona) return;
 
     const existing = await Guilds.getChannel(guildId, channelId);
     if (existing) {
@@ -161,22 +157,8 @@ async function handleEnable(interaction: ChatInputCommandInteraction, guildId: s
 }
 
 async function handleUpdate(interaction: ChatInputCommandInteraction, guildId: string, channelId: string): Promise<void> {
-    const persona = interaction.options.getString('personality', true);
-
-    const personas = await getAvailablePersonas();
-    if (!personas.length) {
-        await interaction.editReply({
-            embeds: [createEmbed(interaction, '❌ No Personas Installed', '```md\n# No persona files found\n> Expected: src/ai/instructions/Persona/*.txt\n> This release ships `default.txt` only — make sure it is present.\n```', COLORS.error)],
-        });
-        return;
-    }
-    if (!personas.includes(persona)) {
-        const available = personas.map(p => '`' + p + '`').join(', ');
-        await interaction.editReply({
-            embeds: [createEmbed(interaction, '❌ Invalid Persona', '```md\n# `' + persona + '` is not a valid persona\n\nAvailable: ' + available + '\n```', COLORS.error)],
-        });
-        return;
-    }
+    const persona = await resolvePersona(interaction);
+    if (!persona) return;
 
     const existing = await Guilds.getChannel(guildId, channelId);
     if (!existing) {

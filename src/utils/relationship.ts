@@ -45,8 +45,9 @@ export function normalizeRelationship(raw: unknown): RelationshipState {
         ? (rawStatus as RelationshipStatus)
         : legacy ?? 'stranger';
 
+    const rawAffection = typeof r.affection === 'number' && Number.isFinite(r.affection) ? r.affection : 0;
     return {
-        affection: typeof r.affection === 'number' ? r.affection : 0,
+        affection: clamp(RELATIONSHIP_CONFIG.scoring.floor, RELATIONSHIP_CONFIG.scoring.ceiling, rawAffection),
         status,
         lastEmotion: typeof r.lastEmotion === 'string' && r.lastEmotion ? r.lastEmotion : null,
         lastInteractionAt: typeof r.lastInteractionAt === 'number' ? r.lastInteractionAt : null,
@@ -124,12 +125,8 @@ export function affectionBand(affection: number): string {
     return 'devoted';
 }
 
-export function buildRelationshipContext(status: RelationshipStatus, affection?: number): string {
-    const base = STATUS_CONTEXT[status] ?? STATUS_CONTEXT.stranger!;
-    if (typeof affection === 'number' && Number.isFinite(affection)) {
-        return `${base} (${Math.round(affection)}).`;
-    }
-    return base;
+export function buildRelationshipContext(status: RelationshipStatus): string {
+    return STATUS_CONTEXT[status] ?? STATUS_CONTEXT.stranger!;
 }
 
 export function formatTimeGap(ms: number | null | undefined): string {

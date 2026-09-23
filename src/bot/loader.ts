@@ -5,6 +5,7 @@ import { join, extname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { CustomClient } from './client.js';
 import { getDevGuild } from '../config/config.js';
+import { loadEnv } from '../config/env.js';
 import type { Event, Command } from '../types/index.js';
 
 const EXT = ['.ts', '.js', '.mjs'];
@@ -12,10 +13,7 @@ const ROOT = process.cwd();
 const COMMANDS_DIR = join(ROOT, 'dist', 'src', 'commands');
 const EVENTS_DIR = join(ROOT, 'dist', 'src', 'events');
 
-const DEV_GUILD = (() => {
-    const raw = getDevGuild();
-    return Array.isArray(raw) ? raw[0] : raw;
-})();
+const DEV_GUILD = getDevGuild();
 
 export async function ready(client: CustomClient): Promise<void> {
     await loadEvents(client);
@@ -62,7 +60,12 @@ export async function loadCommands(client: CustomClient): Promise<Command[]> {
 }
 
 export async function deployCommands(client: CustomClient, commands: Command[]): Promise<void> {
-    const rest = new REST({ version: '10' }).setToken(process.env.token!);
+    const token = loadEnv('token');
+    if (!token) {
+        console.error('[deploy] ❌ Missing token in .env — skipping command registration');
+        return;
+    }
+    const rest = new REST({ version: '10' }).setToken(token);
     const globalCmds = commands.filter(c => c.global).map(c => c.data.toJSON());
     const devCmds = commands.filter(c => !c.global).map(c => c.data.toJSON());
 
@@ -73,10 +76,11 @@ export async function deployCommands(client: CustomClient, commands: Command[]):
         if ((await readCache('commands.hash')) === fingerprint) {
             console.log('[deploy] ✅ Commands unchanged — skipping Discord re-registration');
         } else {
+            let deployed = false;
             if (globalCmds.length) {
                 await rest.put(Routes.applicationCommands(client.user!.id), { body: globalCmds });
                 console.log(`[deploy] 🌍 ${globalCmds.length} global command(s) — propagating to all servers`);
-                await writeCache('commands.hash', fingerprint);
+                deployed = true;
             }
 
             if (DEV_GUILD && devCmds.length) {
@@ -86,6 +90,7 @@ export async function deployCommands(client: CustomClient, commands: Command[]):
                         { body: devCmds }
                     );
                     console.log(`[deploy] ⚡ Dev guild ${DEV_GUILD}: ${devCmds.length} command(s) synced instantly`);
+                    deployed = true;
                 } catch (error: any) {
                     console.error(
                         `[deploy] ⚠️ Dev guild ${DEV_GUILD} sync skipped (${error?.message ?? error}) — ` +
@@ -93,22 +98,27 @@ export async function deployCommands(client: CustomClient, commands: Command[]):
                     );
                 }
             }
+            // Cache on ANY successful deploy — dev-only changes count too.
+            if (deployed) await writeCache('commands.hash', fingerprint);
         }
     }
 
-    client.on(Events.GuildCreate, async (guild: Guild) => {
-        if (guild.id !== DEV_GUILD || !devCmds.length) return;
+    // One cluster owns the retry listener — otherwise N clusters PUT at once.
+    if (client.cluster?.id === 0) {
+        client.on(Events.GuildCreate, async (guild: Guild) => {
+            if (guild.id !== DEV_GUILD || !devCmds.length) return;
 
-        try {
-            await rest.put(
-                Routes.applicationGuildCommands(client.user!.id, guild.id),
-                { body: devCmds }
-            );
-            console.log(`[deploy] ⚡ Dev guild ${guild.name}: ${devCmds.length} command(s) synced instantly`);
-        } catch (error: any) {
-            console.error(`[deploy] ❌ ${guild.name}:`, error.message);
-        }
-    });
+            try {
+                await rest.put(
+                    Routes.applicationGuildCommands(client.user!.id, guild.id),
+                    { body: devCmds }
+                );
+                console.log(`[deploy] ⚡ Dev guild ${guild.name}: ${devCmds.length} command(s) synced instantly`);
+            } catch (error: any) {
+                console.error(`[deploy] ❌ ${guild.name}:`, error.message);
+            }
+        });
+    }
 
     console.log('[deploy] ✅ Ready — global propagation in progress, dev guild live');
 }
@@ -133,7 +143,13 @@ async function writeCache(name: string, data: string): Promise<void> {
 }
 
 async function getFiles(dir: string): Promise<string[]> {
-    const entries = await readdir(dir, { withFileTypes: true });
+    let entries;
+    try {
+        entries = await readdir(dir, { withFileTypes: true });
+    } catch (error: any) {
+        if (error?.code === 'ENOENT') throw new Error(`Command/event dir missing (did you run npm run build?): ${dir}`);
+        throw error;
+    }
     const files: string[] = [];
     for (const entry of entries) {
         const fullPath = join(dir, entry.name);

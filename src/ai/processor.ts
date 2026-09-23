@@ -1,14 +1,16 @@
-// i hate this file, seriosly
 import fs from 'fs';
 import path from 'path';
 import type { Message } from 'discord.js';
 import { Users } from '../db/database.js';
 import {
+    clearIgnored,
     getSession,
     getSessionSummary,
     getUserState,
+    markIgnoreWarned,
     persistTurn,
     saveSessionSummary,
+    saveUserState,
     sessionKey,
     trimSessionToTail,
     usageToday,
@@ -73,17 +75,41 @@ const TURN_CONTRACT = `
 Respond with exactly one JSON object, nothing else:
 {"message": string, "emotion": string, "relationship_delta": integer, "memory_action": object|null, "tool_call": object|null}
 
-- message: reply as Alice. Empty ONLY when tool_call is set. Conversation = messages below. Recall questions: answer factually from messages below first; Durable Memories block is separate long-term facts. Fact first, then cute. Don't just echo; acknowledgment first.
-- Agency: you may outright refuse anything you dislike (short, in-character) and you may ignore harassment/creep via ignore_user; apology/amends may earn unignore, or reply once that you won't reply until they apologize.
-- Never repeat: never resend same/near-same wording as your last 2-3 turns. If re-asked, acknowledge (told you lol) + say something new.
-- Bubbles: rare, default 1 bubble. Blank line (\\n\\n) = 2 bubbles max, ONLY on explicit ask or genuinely long reply. Greeting + question stays one bubble. No blank line = 1 bubble.
-- Emoji: MUST be at most one [happy/angry/wave/scared/confused/excited/joy/eating/dizzy/wtf] tag per reply — second sentence gets none. Unicode emojis never render (only [tags] become emojis), so NEVER emit any: no yellow faces/hands anywhere in message. [tag] = message only, Unicode = react tool only, never swap.
-- Voice lock: MUST start lowercase (never a capitalised sentence start; Luna/Tokyo keep capitals). Drop "?" unless the question needs it. No "!" ever.
-- Substance: asked to explain/teach/tell more → real content first (brevity lifted), never deflection without content. Image attached → look at it and answer from what you see; never claim blind. Image failed to load → say so once, ask for re-upload.
-- emotion: neutral, happy, amused, affectionate, flirty, sad, annoyed, angry, surprised, worried.
-- relationship_delta: -3..+3 bond shift, 0 = smalltalk. Judge intent.
-- memory_action: {"action":"remember","text":"..."} for one durable fact (if user says "remember X", MUST emit), {"action":"forget","text":"..."} for exact drop, else null.
+- message: reply as Alice. Empty ONLY when tool_call is set. Don't just echo.
+- Agency: outright refuse per preset; ignore_user per Tools (last resort only).
+- Emoji: per Reply Style (at most one [tag]).
+- Voice lock: MUST start lowercase (sentence-initial proper nouns keep capitals). Drop "?" unless the question needs it. No "!" ever.
+- memory_action: remember only durable user facts (esp. explicit "remember X"), forget only on explicit drop, else null.
+- relationship_delta/emotion: -3..+3 intent shift (0 = smalltalk), emotion from enum to match reply.
 - tool_call: {"name":..., "query":..., "target":..., "message":..., "action":..., "emoji":...} with ONLY that tool's fields, INSTEAD of replying; null when done/unneeded.`;
+
+const IGNORE_APOLOGY_RE =
+    /\bsorr(?:y|ies)\b|\bapolog|\bforgive\b|\bmy (?:bad|fault|mistake)\b|\bi (?:was|am) wrong\b|\bwon'?t do it again\b|\bwill stop\b|\bamends?\b/i;
+
+const IGNORE_EVAL_SYSTEM = `You decide if an ignored user genuinely apologized. Respond with exactly one JSON object, nothing else: {"message": string, "emotion": string, "relationship_delta": integer, "memory_action": object|null, "tool_call": object|null}
+- Sincere apology/remorse + intent to stop -> tool_call {"name":"ignore_user","action":"unignore"}, message "".
+- Anything else ("sorry not sorry", mocking, insults, demands, off-topic, continued creep) -> tool_call null, message "" (host stays silent).
+- relationship_delta 0, memory_action null, emotion neutral.`;
+
+const IGNORE_COLD_LINES = [
+    'not talking to you till you actually apologize',
+    'yeah no, come back when you can apologize properly',
+    'ignored till you mean a sorry lol',
+] as const;
+
+function ignoreColdLine(): string {
+    return IGNORE_COLD_LINES[Math.floor(Math.random() * IGNORE_COLD_LINES.length)]!;
+}
+
+/** Single cold line on first message per ignore window, then silence. 1 RTT via SET NX PX. */
+async function ignoreColdOrSilent(userId: string, ttlMs: number): Promise<ProcessResult | null> {
+    try {
+        if (!(await markIgnoreWarned(userId, ttlMs))) return null;
+    } catch {
+        return null;
+    }
+    return { content: applyEmojis(ignoreColdLine()), emotion: 'annoyed', degraded: false, toolsUsed: [] };
+}
 
 const MEMORY_MAX_CHARS = 160;
 const MEMORY_MAX_SLOTS = 30;
@@ -91,7 +117,7 @@ const MEMORY_MAX_SLOTS = 30;
 const MAX_IMAGES = 2;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
-function mimeFromFileName(name: string): string {
+function mimeFromFileName(name: string): string | null {
     const ext = name.split('.').pop()?.toLowerCase();
     switch (ext) {
         case 'jpg':
@@ -108,26 +134,16 @@ function mimeFromFileName(name: string): string {
         case 'avif':
             return 'image/avif';
         default:
-            return 'image/png';
+            return null;
     }
 }
 
-const fileCache = new Map<string, string>();
-
 function loadPromptFile(relativePath: string): string {
-    const cached = fileCache.get(relativePath);
-    if (cached !== undefined) return cached;
-
-    let content = '';
     try {
-        content = fs.readFileSync(path.join(process.cwd(), relativePath), 'utf-8');
+        return fs.readFileSync(path.join(process.cwd(), relativePath), 'utf-8');
     } catch {
-        // Don't poison the cache with misses — retry next time.
         return '';
     }
-
-    fileCache.set(relativePath, content);
-    return content;
 }
 
 const staticPromptCache = new Map<string, string>();
@@ -162,10 +178,7 @@ function buildContextSystemPrompt(opts: {
     styleHint: string;
     statusJustChanged: boolean;
 }): string {
-    const relationshipLine = buildRelationshipContext(opts.status, opts.affection).replace(
-        '{user}',
-        opts.userName,
-    );
+    const relationshipLine = buildRelationshipContext(opts.status).replace('{user}', opts.userName);
     const nowLine = `${formatTokyoNow(new Date(opts.now))}.`;
     const gapLine =
         opts.lastInteractionAt == null
@@ -455,17 +468,24 @@ async function maybeSummarize(
 
 const userLocks = new Map<string, Promise<unknown>>();
 
-function withUserLock<T>(userId: string, fn: () => Promise<T>): Promise<T> {
-    const prev = userLocks.get(userId) ?? Promise.resolve();
+// Per user+channel so a hung turn in one channel never wedges the user
+// everywhere. Stale entries self-evict after TURN_TIMEOUT_MS even if the
+// underlying promise never settles.
+const TURN_TIMEOUT_MS = 90_000;
+
+function withUserLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = userLocks.get(key) ?? Promise.resolve();
     const run = prev.then(fn, fn);
     const sentinel = run.then(
         () => undefined,
         () => undefined,
     );
-    userLocks.set(userId, sentinel);
-    void sentinel.then(() => {
-        if (userLocks.get(userId) === sentinel) userLocks.delete(userId);
-    });
+    userLocks.set(key, sentinel);
+    const cleanup = () => {
+        if (userLocks.get(key) === sentinel) userLocks.delete(key);
+    };
+    void sentinel.then(cleanup);
+    setTimeout(cleanup, TURN_TIMEOUT_MS).unref?.();
     return run;
 }
 
@@ -477,10 +497,10 @@ export async function processMessage(
     const author = message.author;
     if (!author || author.bot) return null;
 
-    return withUserLock(author.id, () => handleProcess(message, persona, opts));
+    return withUserLock(`${author.id}:${message.channelId}`, () => handleProcess(message, persona, opts));
 }
 
-async function collectImages(message: Message): Promise<ChatImage[]> {
+async function collectImages(message: Message): Promise<{ images: ChatImage[]; failed: number }> {
     const eligible: Array<{ mimeType: string; url: string }> = [];
 
     for (const attachment of message.attachments.values()) {
@@ -492,15 +512,14 @@ async function collectImages(message: Message): Promise<ChatImage[]> {
             type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(name);
         if (!looksImage || attachment.size > MAX_IMAGE_BYTES) continue;
 
-        eligible.push({
-            mimeType: type.startsWith('image/') ? type : mimeFromFileName(name),
-            url: attachment.url,
-        });
+        const mimeType = type.startsWith('image/') ? type : mimeFromFileName(name);
+        if (!mimeType) continue;
+        eligible.push({ mimeType, url: attachment.url });
     }
 
     const results = await Promise.allSettled(
         eligible.map(async ({ mimeType, url }) => {
-            const res = await fetch(url);
+            const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
             if (!res.ok) throw new Error(`Attachment download failed: ${res.status}`);
 
             const buffer = Buffer.from(await res.arrayBuffer());
@@ -508,7 +527,8 @@ async function collectImages(message: Message): Promise<ChatImage[]> {
         }),
     );
 
-    return results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+    const images = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+    return { images, failed: eligible.length - images.length };
 }
 
 async function handleProcess(
@@ -539,28 +559,52 @@ async function handleProcess(
 
     const [user, state] = await Promise.all([Users.ensure(userId), getUserState(userId)]);
     if (user.blacklisted) return null;
-    if (state.ignoredUntil != null && state.ignoredUntil > now) return null;
+
+    const botId = message.client.user?.id ?? null;
+    const rawContent = message.content ?? '';
+    // Bare mention with nothing else is not a message — never fire an LLM turn on it.
+    const content = stripBotMention(rawContent, botId);
+    if (!content) return null;
+
+    // Ignored-but-listening: silence by default, but apology-like texts get one
+    // minimal LLM eval that can unignore. Non-apologies skip the LLM entirely.
+    if (state.ignoredUntil != null && state.ignoredUntil > now) {
+        const remaining = state.ignoredUntil - now;
+        if (!IGNORE_APOLOGY_RE.test(content.slice(0, 500))) {
+            return ignoreColdOrSilent(userId, remaining);
+        }
+        try {
+            const { text: raw } = await chat({
+                system: IGNORE_EVAL_SYSTEM,
+                messages: [{ role: 'user', content: `${author.username}: ${content.slice(0, 500)}` }],
+                temperature: 0.3,
+                maxTokens: 300,
+                thinking: ThinkingLevel.MINIMAL,
+            });
+            const turn = parseAliceTurn(raw);
+            if (turn?.toolCall?.name === 'ignore_user' && turn.toolCall.action === 'unignore') {
+                await clearIgnored(userId).catch(() => null);
+                state.ignoredUntil = null;
+            } else {
+                return ignoreColdOrSilent(userId, remaining);
+            }
+        } catch {
+            return ignoreColdOrSilent(userId, remaining);
+        }
+    }
 
     const byokKey = user.byokKey?.startsWith('AIza') ? user.byokKey : undefined;
     const isByok = Boolean(byokKey);
 
-    const botId = message.client.user?.id ?? null;
-    const rawContent = message.content ?? '';
-    const content = stripBotMention(rawContent, botId) || rawContent.trim();
-    if (!content) return null;
-
-    let rel: RelationshipState;
-    let decayed = false;
-    if (state.rel) {
-        rel = state.rel;
-    } else {
-        const result = applyMonthlyDecay(normalizeRelationship(user.relationship), now);
-        rel = result.rel;
-        decayed = result.decayed;
-    }
+    // Decay always runs — the hot Redis path is the common case, not the fallback.
+    const decayResult = applyMonthlyDecay(normalizeRelationship(state.rel ?? user.relationship), now);
+    const rel0 = decayResult.rel;
+    const decayed = decayResult.decayed;
+    let rel: RelationshipState = rel0;
 
     let voted = false;
     let vote = state.vote;
+    let voteChanged = false;
     let usedToday = 0;
     if (!isByok) {
         usedToday = state.usage.day === usageToday() ? state.usage.count : 0;
@@ -577,6 +621,7 @@ async function handleProcess(
             } else {
                 voted = fresh;
                 vote = { voted, checkedAt: now } satisfies UserVoteState;
+                voteChanged = true;
             }
         }
 
@@ -584,6 +629,8 @@ async function handleProcess(
         const quota = base + (voted ? RELATIONSHIP_CONFIG.usage.voterBonus : 0);
 
         if (usedToday >= quota) {
+            // Quota block must not swallow the fresh vote check above.
+            if (voteChanged) await saveUserState(userId, { ...state, vote }).catch(() => null);
             return {
                 content: applyEmojis(quotaLine(quota, RELATIONSHIP_CONFIG.usage.voterBonus)),
                 emotion: 'sad',
@@ -596,11 +643,15 @@ async function handleProcess(
     if (!message.channel) return null;
     const isDM = message.channel.isDMBased();
     const key = sessionKey(isDM ? null : message.guildId, message.channelId);
-    const [session, summary, images] = await Promise.all([
+    const [session, summary, collected] = await Promise.all([
         getSession(key),
         getSessionSummary(key).catch(() => null),
-        message.attachments.size ? collectImages(message) : Promise.resolve([]),
+        message.attachments.size
+            ? collectImages(message)
+            : Promise.resolve({ images: [], failed: 0 }),
     ]);
+    const images = collected.images;
+    const imagesFailed = collected.failed;
 
     // sinceAt = last status change (any status). A recent change shows subtly for ~24h.
     const statusJustChanged =
@@ -622,15 +673,11 @@ async function handleProcess(
         .filter((part) => part !== '')
         .join('\n\n');
 
-    // Shared channel: full group context. Summary (if any) lives once in the
-    // system prompt; here we send the whole stored session (max 30 rows) with
-    // speaker attribution so nothing asked-about is ever invisible. Rows are
-    // truncated for model input only — Redis keeps full text. (A tail-only
-    // window here created a blind spot: rows older than the last 14 were
-    // neither sent nor summarized until the 30-row roll-up deleted them.)
+    // Live tail only: the head is covered by the rolling summary in the system
+    // prompt, so sending it again doubles tokens for zero recall gain.
     const MODEL_ROW_CAP = 500;
     const messages: AiMessage[] = [];
-    for (const m of session) {
+    for (const m of session.slice(-SESSION_MODEL_WINDOW)) {
         const safeContent = (m.content ?? '').trim().slice(0, MODEL_ROW_CAP);
         if (!safeContent) continue;
         const safeName = (m.username ?? 'user').trim() || 'user';
@@ -640,9 +687,11 @@ async function handleProcess(
                 : { role: 'user', content: `${safeName}: ${safeContent}` },
         );
     }
+    // Only genuinely failed downloads get the failure cue — skipped files
+    // (oversize, non-image, beyond the 2-image cap) stay silent.
     const imageCue = images.length
         ? '\n[image attached — look at it and answer from what you see]'
-        : message.attachments.size
+        : imagesFailed > 0
           ? '\n[image failed to load — say so plainly once, ask for re-upload]'
           : '';
     messages.push({ role: 'user', content: `${author.username}: ${content}${imageCue}` });
@@ -669,8 +718,19 @@ async function handleProcess(
         stopThinking?.();
     }
 
-    if (degraded)
+    if (degraded) {
+        // Failures still consume quota — otherwise retries are free and infinite.
+        if (!isByok) {
+            const count = state.usage.day === usageToday() ? state.usage.count : 0;
+            await saveUserState(userId, {
+                rel,
+                usage: { day: usageToday(), count: count + 1 },
+                vote,
+                ignoredUntil: state.ignoredUntil,
+            }).catch(() => null);
+        }
         return { content: applyEmojis(reply), emotion: turn.emotion, degraded, toolsUsed };
+    }
 
     const delta = clamp(-3, 3, turn.relationshipDelta);
     const affection = clamp(
