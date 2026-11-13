@@ -96,6 +96,47 @@ function userCachePatch(
     patch(entry.data);
 }
 
+// Guild configs change rarely but are read every guild turn — brief cache.
+// Same caveat as userCache: cross-process writes become visible within TTL.
+const GUILD_CACHE_TTL_MS = 60 * 1000;
+const GUILD_CACHE_MAX = 5000;
+
+interface GuildCacheEntry {
+    data: GuildData;
+    expiresAt: number;
+}
+
+const guildCache = new Map<string, GuildCacheEntry>();
+
+function cloneGuild(data: GuildData): GuildData {
+    return { ...data, channels: { ...data.channels } };
+}
+
+function guildCacheGet(guildId: string): GuildData | null {
+    const entry = guildCache.get(guildId);
+    if (!entry) return null;
+
+    if (entry.expiresAt <= Date.now()) {
+        guildCache.delete(guildId);
+        return null;
+    }
+
+    // Refresh LRU position.
+    guildCache.delete(guildId);
+    guildCache.set(guildId, entry);
+    return cloneGuild(entry.data);
+}
+
+function guildCacheSet(guildId: string, data: GuildData): void {
+    guildCache.delete(guildId);
+    guildCache.set(guildId, { data: cloneGuild(data), expiresAt: Date.now() + GUILD_CACHE_TTL_MS });
+
+    if (guildCache.size > GUILD_CACHE_MAX) {
+        const oldest = guildCache.keys().next().value;
+        if (oldest !== undefined) guildCache.delete(oldest);
+    }
+}
+
 class UsersModel {
     constructor(private collection: Collection) {}
 
@@ -185,10 +226,6 @@ class UsersModel {
         return gate.blacklisted;
     }
 
-    async getBlacklistReason(userId: string): Promise<string | null> {
-        return (await this.get(userId))?.blacklistReason ?? null;
-    }
-
     async saveInteraction(
         userId: string,
         _base: UserData,
@@ -270,9 +307,14 @@ class GuildsModel {
     constructor(private collection: Collection) {}
 
     async get(guildId: string): Promise<GuildData | null> {
+        const cached = guildCacheGet(guildId);
+        if (cached) return cached;
+
         try {
             const doc = await this.collection.get(hashKey(guildId));
-            return doc.content as GuildData;
+            const data = doc.content as GuildData;
+            guildCacheSet(guildId, data);
+            return cloneGuild(data);
         } catch (err) {
             if (err instanceof DocumentNotFoundError) return null;
             throw err;
@@ -281,10 +323,12 @@ class GuildsModel {
 
     async set(guildId: string, data: GuildData): Promise<void> {
         await this.collection.upsert(hashKey(guildId), data);
+        guildCacheSet(guildId, data);
     }
 
     async remove(guildId: string): Promise<void> {
         await this.collection.remove(hashKey(guildId));
+        guildCache.delete(guildId);
     }
 
     async setChannel(guildId: string, channelId: string, persona: string): Promise<void> {

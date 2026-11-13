@@ -1,12 +1,13 @@
-import { Collection, Events, Message, PermissionsBitField } from 'discord.js';
+import { Collection, Events, Message, MessageReplyOptions, PermissionsBitField } from 'discord.js';
+import type { Attachment, User } from 'discord.js';
 import type { CustomClient } from '../bot/client.js';
 import { Guilds, Users } from '../db/database.js';
 import { processMessage } from '../ai/processor.js';
 import { cooldownLine } from '../ai/voiceLines.js';
+import { splitBubbles } from '../utils/bubbles.js';
 import { createTosEmbed } from '../utils/tos.js';
 import type { Event } from '../types/index.js';
 
-const DISCORD_MESSAGE_LIMIT = 2000;
 const AI_COOLDOWN_MS = 3000;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -42,7 +43,7 @@ function mergeQueued(queued: Message[]): { message: Message; channel: Message['c
         .slice(0, 2000);
     if (!combined) return null;
 
-    const attachments = new Collection<string, any>();
+    const attachments = new Collection<string, Attachment>();
     for (const m of queued) {
         for (const att of m.attachments.values()) {
             if (attachments.size >= 2) break;
@@ -51,7 +52,7 @@ function mergeQueued(queued: Message[]): { message: Message; channel: Message['c
         if (attachments.size >= 2) break;
     }
 
-    const users = new Collection<string, any>();
+    const users = new Collection<string, User>();
     for (const m of queued) {
         for (const [id, u] of m.mentions.users) {
             if (!users.has(id)) users.set(id, u);
@@ -90,58 +91,12 @@ async function safeReply(message: Message, content: string): Promise<void> {
     }
 }
 
-function splitHard(content: string): string[] {
-    if (content.length <= DISCORD_MESSAGE_LIMIT) return [content];
-
-    const parts: string[] = [];
-    let remaining = content;
-    while (remaining.length > DISCORD_MESSAGE_LIMIT) {
-        const window = remaining.slice(0, DISCORD_MESSAGE_LIMIT);
-        let cut = window.lastIndexOf('\n');
-        if (cut <= 0) cut = window.lastIndexOf(' ');
-        if (cut <= 0) cut = DISCORD_MESSAGE_LIMIT;
-
-        parts.push(remaining.slice(0, cut).trimEnd());
-        remaining = remaining.slice(cut).trimStart();
+async function safeReplyPayload(message: Message, payload: MessageReplyOptions): Promise<void> {
+    try {
+        await message.reply(payload);
+    } catch (err) {
+        if (!isBenignSendError(err)) throw err;
     }
-    if (remaining.length) parts.push(remaining);
-    return parts;
-}
-
-/**
- * Human texting split: 1 bubble by default. A blank line is an explicit
- * model-authored break -> 2 bubbles max. Never more than 2.
- */
-function splitBubbles(content: string): string[] {
-    const text = content.replace(/\r\n/g, '\n').trim();
-    if (!text) return [];
-    // Model-authored break wins over every heuristic below.
-    const authored = text.indexOf('\n\n');
-    if (authored > 0 && authored < text.length - 2) {
-        const parts = [text.slice(0, authored).trim(), text.slice(authored + 2).trim()].filter(Boolean);
-        if (parts.length === 2) return parts.flatMap(splitHard).slice(0, 2);
-    }
-    if (text.length <= 280) return splitHard(text);
-    if (text.length > DISCORD_MESSAGE_LIMIT) return splitHard(text);
-
-    // Prefer a paragraph break, else a sentence boundary near the middle.
-    const para = text.indexOf('\n\n');
-    if (para > 60 && para < text.length - 60) {
-        return [text.slice(0, para).trim(), text.slice(para + 2).trim()].flatMap(splitHard);
-    }
-    const mid = Math.floor(text.length / 2);
-    let best = -1;
-    const sentenceRe = /[.!?…]\s/g;
-    let m: RegExpExecArray | null;
-    while ((m = sentenceRe.exec(text)) !== null) {
-        const idx = m.index + m[0].length;
-        if (idx < 60 || idx > text.length - 60) continue;
-        if (best === -1 || Math.abs(idx - mid) < Math.abs(best - mid)) best = idx;
-    }
-    if (best !== -1) {
-        return [text.slice(0, best).trim(), text.slice(best).trim()].flatMap(splitHard);
-    }
-    return splitHard(text).slice(0, 2);
 }
 
 function startTyping(channel: Message['channel']): () => void {
@@ -278,8 +233,19 @@ async function handleTurn(
         const response = await processMessage(message, persona, {
             onThinking: () => startTyping(channel),
         });
-        if (!response?.content) return;
+        if (!response) return;
         client.cooldowns.set(cooldownKey, Date.now() + AI_COOLDOWN_MS);
+
+        // Embed replies (error / quota walls) skip the human-typing illusion.
+        if (response.embed?.data) {
+            await safeReplyPayload(message, {
+                embeds: [response.embed],
+                // exactOptionalPropertyTypes: only set components when present.
+                ...(response.components ? { components: response.components } : {}),
+            });
+            return;
+        }
+        if (!response.content) return;
 
         // Tiny human jitter — stays snappy (300-900ms), just enough to feel typed.
         await sleep(300 + Math.random() * 600);

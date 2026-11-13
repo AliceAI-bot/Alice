@@ -1,4 +1,11 @@
-import { Events, Interaction, ChatInputCommandInteraction, ButtonInteraction } from 'discord.js'; import { CustomClient } from '../bot/client.js'; import { createTosEmbed, handleTosButton } from '../utils/tos.js'; import { Users } from '../db/database.js'; import { buildBlacklistResponse } from '../utils/blacklistUtil.js'; import { handleByokButton, handleByokModal } from '../commands/byok.js'; import type { Event, Command } from '../types/index.js';
+import { Events, Interaction, ChatInputCommandInteraction, ButtonInteraction } from 'discord.js';
+import { CustomClient } from '../bot/client.js';
+import { createTosEmbed, handleTosButton } from '../utils/tos.js';
+import { Users } from '../db/database.js';
+import { buildBlacklistResponse } from '../utils/blacklistUtil.js';
+import { handleFlagButton, handleFlagBlacklistModal, FLAG_BLACKLIST_MODAL_PREFIX, FLAG_BLACKLIST_PREFIX, FLAG_CLOSE_PREFIX } from '../utils/flagReport.js';
+import { handleByokButton, handleByokModal } from '../commands/byok.js';
+import type { Event, Command } from '../types/index.js';
 
 export default {
     name: Events.InteractionCreate,
@@ -9,6 +16,15 @@ export default {
                 await handleTosButton(interaction as ButtonInteraction);
                 return;
             }
+            // Mod/act buttons on flag reports — routed before the tos/blacklist
+            // wall so walled mods can still take action.
+            if (
+                interaction.customId.startsWith(FLAG_BLACKLIST_PREFIX) ||
+                interaction.customId.startsWith(FLAG_CLOSE_PREFIX)
+            ) {
+                await handleFlagButton(interaction as ButtonInteraction);
+                return;
+            }
             if (await isBlocked(interaction)) return;
             if (interaction.customId.startsWith('byok_add') || interaction.customId.startsWith('byok_remove')) {
                 await handleByokButton(interaction as ButtonInteraction);
@@ -17,6 +33,11 @@ export default {
             return;
         }
         if (interaction.isModalSubmit()) {
+            // Flag-blacklist reason modal — same wall bypass as the buttons.
+            if (interaction.customId.startsWith(FLAG_BLACKLIST_MODAL_PREFIX)) {
+                await handleFlagBlacklistModal(interaction);
+                return;
+            }
             if (interaction.customId === 'byok_modal') {
                 if (await isBlocked(interaction)) return;
                 await handleByokModal(interaction);

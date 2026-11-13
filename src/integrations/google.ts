@@ -1,59 +1,140 @@
 import '../config/env.js';
-import { GoogleGenAI, MediaResolution, ThinkingLevel } from '@google/genai';
+import {
+    GoogleGenAI,
+    HarmBlockThreshold,
+    HarmCategory,
+    MediaResolution,
+    ThinkingLevel,
+} from '@google/genai';
 import type { Content, GenerateContentConfig, GenerateContentResponse } from '@google/genai';
 import { AiError, AiMessage } from '../types/ai.js';
 
-export const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
-export const DEFAULT_TEMPERATURE = 1.3;
+// ----------------------------------------------------------- model constants
 
-// Structured-output defaults for gemini-3.5-flash-lite. The main chat turn
-// enforces responseSchema, so it needs a cool temp, a small thinking budget,
-// and headroom for reasoning + JSON. (HIGH thinking + 600 tokens starves the
-// JSON and yields empty/truncated text that fails JSON.parse every time.)
-export const STRUCTURED_TEMPERATURE = 0.8;
-export const STRUCTURED_MAX_TOKENS = 1500;
+const MODEL = 'gemini-3.5-flash-lite';
 
+// Casual chat wants a hot temp; structured JSON needs a cool one plus headroom
+// for reasoning + JSON. (HIGH thinking + a small budget starves the JSON and
+// yields empty/truncated text that fails JSON.parse every time.)
+const CASUAL = { temperature: 1.3, maxTokens: 600 } as const;
+const STRUCTURED = { temperature: 0.8, maxTokens: 1500 } as const;
 
-export function pickGenParams(): { temperature: number; maxTokens: number } {
-    return { temperature: DEFAULT_TEMPERATURE, maxTokens: 600 };
+// Only the highest-severity content is blocked. Explicit 18+ is intentionally
+// unfiltered (18+ bot per ToS); harassment is pinned so API defaults can't drift.
+const SAFETY_SETTINGS = [
+    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+];
+
+/** Raised when Gemini blocked the prompt/response on a safety category. Not retried. */
+export class SafetyBlockedError extends AiError {
+    /** HARM_CATEGORY_* values the model actually blocked, when reported. */
+    readonly categories: string[];
+
+    constructor(message: string, categories: string[] = [], body: unknown = null) {
+        super(message, 400, body);
+        this.name = 'SafetyBlockedError';
+        this.categories = categories;
+    }
 }
 
-export function pickStructuredParams(): { temperature: number; maxTokens: number } {
-    return { temperature: STRUCTURED_TEMPERATURE, maxTokens: STRUCTURED_MAX_TOKENS };
-}
+// ----------------------------------------------------------- retry + cooldown
 
 const MAX_ATTEMPTS = 4;
+const RETRY_BASE_MS = 500;
+const RETRY_MAX_MS = 5_000;
+/** A rate-limited key is temporarily kicked out of rotation for this long. */
+const KEY_COOLDOWN_MS = 30_000;
 
-interface Pool {
-    clients: GoogleGenAI[];
-    cursor: number;
+/** One API key (shared pool or BYOK) with its transient 429 cooldown. */
+interface Slot {
+    client: GoogleGenAI;
+    /** 0 = healthy; else earliest timestamp the key may be used again. */
+    coolUntil: number;
 }
 
-let pool: Pool | null = null;
+let shared: Slot[] | null = null;
+let cursor = 0;
 
-function keyPool(): Pool {
-    if (pool) return pool;
-
-    const entries = Object.entries(process.env)
-        .filter(([name]) => /^google_key_\d+$/.test(name))
-        .sort(([a], [b]) => Number(a.replace(/\D/g, '')) - Number(b.replace(/\D/g, '')));
+function sharedPool(): Slot[] {
+    if (shared) return shared;
 
     const seen = new Set<string>();
-    const clients: GoogleGenAI[] = [];
-    for (const [, value] of entries) {
-        const key = value?.trim();
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        clients.push(new GoogleGenAI({ apiKey: key }));
-    }
+    shared = Object.entries(process.env)
+        .filter(([name]) => /^google_key_\d+$/.test(name))
+        .toSorted(([a], [b]) => Number(a.replace(/\D/g, '')) - Number(b.replace(/\D/g, '')))
+        .flatMap(([, value]) => {
+            const key = value?.trim();
+            if (!key || seen.has(key)) return [];
+            seen.add(key);
+            return [{ client: new GoogleGenAI({ apiKey: key }), coolUntil: 0 }];
+        });
 
-    if (!clients.length) {
+    if (!shared.length) {
         throw new AiError('No Gemini API keys configured (set google_key_0..N in .env).');
     }
-
-    pool = { clients, cursor: 0 };
-    return pool;
+    return shared;
 }
+
+/** Round-robin preferring healthy keys; all-cooling falls back to the soonest recovery. */
+function takeSharedSlot(): Slot {
+    const pool = sharedPool();
+    if (!pool.length) throw new AiError('All configured Gemini API keys were rejected.');
+
+    const now = Date.now();
+    for (let i = 0; i < pool.length; i++) {
+        const slot = pool[cursor++ % pool.length]!;
+        if (slot.coolUntil <= now) return slot;
+    }
+    return pool.toSorted((a, b) => a.coolUntil - b.coolUntil)[0]!;
+}
+
+/** Bad keys never come back. */
+function dropShared(slot: Slot): void {
+    const index = shared?.indexOf(slot) ?? -1;
+    if (index !== -1) shared!.splice(index, 1);
+}
+
+function markCooling(slot: Slot): void {
+    slot.coolUntil = Date.now() + KEY_COOLDOWN_MS;
+}
+
+function markHealthy(slot: Slot): void {
+    slot.coolUntil = 0;
+}
+
+const BYOK_CACHE_MAX = 50;
+const byokClients = new Map<string, Slot>();
+
+function byokSlot(apiKey: string): Slot {
+    const existing = byokClients.get(apiKey);
+    if (existing) {
+        // Re-insert to keep the Map acting as an LRU.
+        byokClients.delete(apiKey);
+        byokClients.set(apiKey, existing);
+        return existing;
+    }
+
+    const slot: Slot = { client: new GoogleGenAI({ apiKey }), coolUntil: 0 };
+    byokClients.set(apiKey, slot);
+    if (byokClients.size > BYOK_CACHE_MAX) {
+        const oldest = byokClients.keys().next().value;
+        if (oldest !== undefined) byokClients.delete(oldest);
+    }
+    return slot;
+}
+
+/** A BYOK key known rate-limited fails fast instead of hammering Google again. */
+function throwIfByokCooling(apiKey: string): void {
+    const slot = byokClients.get(apiKey);
+    if (slot && slot.coolUntil > Date.now()) {
+        throw new AiError('Your API key is rate limited right now — try again in a moment.', 429);
+    }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 function wrapError(err: unknown): AiError {
     if (err instanceof AiError) return err;
@@ -77,89 +158,47 @@ function looksLikeBadKey(err: AiError): boolean {
     );
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-function toContents(messages: AiMessage[], images?: ChatImage[]): Content[] {
-    const contents: Content[] = messages.map((m) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-    }));
-
-    if (images?.length && contents.length) {
-        const last = contents[contents.length - 1]!;
-        last.parts = [...(last.parts ?? []), ...images.map((img) => ({ inlineData: { mimeType: img.mimeType, data: img.data } }))];
-    }
-
-    return contents;
-}
-
-const BYOK_CACHE_MAX = 50;
-const byokClients = new Map<string, GoogleGenAI>();
-
-function byokClient(apiKey: string): GoogleGenAI {
-    const existing = byokClients.get(apiKey);
-    if (existing) {
-        byokClients.delete(apiKey);
-        byokClients.set(apiKey, existing);
-        return existing;
-    }
-
-    const client = new GoogleGenAI({ apiKey });
-    byokClients.set(apiKey, client);
-
-    const oldest = byokClients.keys().next().value;
-    if (byokClients.size > BYOK_CACHE_MAX && oldest !== undefined) {
-        byokClients.delete(oldest);
-    }
-    return client;
-}
-
-function resolveClient(apiKey?: string): GoogleGenAI {
-    if (apiKey) return byokClient(apiKey);
-
-    const p = keyPool();
-    if (!p.clients.length) {
-        throw new AiError('All configured Gemini API keys were rejected.');
-    }
-    return p.clients[p.cursor++ % p.clients.length]!;
-}
-
-function dropFromPool(client: GoogleGenAI): void {
-    const p = keyPool();
-    const index = p.clients.indexOf(client);
-    if (index !== -1) p.clients.splice(index, 1);
-}
-
+/**
+ * Run a model call across up to MAX_ATTEMPTS with key rotation:
+ * 429 -> cooldown + try another key, bad key -> dropped from the pool,
+ * other errors -> retry with capped exponential backoff.
+ */
 async function resilientCall<T>(
     doCall: (client: GoogleGenAI) => Promise<T>,
     apiKey?: string,
 ): Promise<T> {
-    let lastError = new AiError('AI request failed.');
+    if (apiKey) throwIfByokCooling(apiKey);
 
+    let lastError = new AiError('AI request failed.');
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-        let client: GoogleGenAI;
+        let slot: Slot;
         try {
-            client = resolveClient(apiKey);
+            slot = apiKey ? byokSlot(apiKey) : takeSharedSlot();
         } catch (err) {
             throw wrapError(err);
         }
 
         try {
-            return await doCall(client);
+            const result = await doCall(slot.client);
+            markHealthy(slot);
+            return result;
         } catch (err) {
             lastError = wrapError(err);
 
-            if (!apiKey && looksLikeBadKey(lastError)) {
-                dropFromPool(client);
+            if (looksLikeBadKey(lastError)) {
+                if (!apiKey) dropShared(slot);
                 continue;
             }
+            if (lastError.status === 429) markCooling(slot);
             if (!isRetryable(lastError)) break;
 
-            await sleep(Math.min(2 ** attempt * 500, 5000));
+            await sleep(Math.min(RETRY_BASE_MS * 2 ** attempt, RETRY_MAX_MS));
         }
     }
     throw lastError;
 }
+
+// ----------------------------------------------------------- chat
 
 export interface ChatImage {
     mimeType: string;
@@ -192,18 +231,93 @@ export interface ChatResult {
         | undefined;
 }
 
+function toContents(messages: AiMessage[], images?: ChatImage[]): Content[] {
+    const contents: Content[] = messages.map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+    }));
+
+    if (images?.length && contents.length) {
+        const last = contents.at(-1)!;
+        last.parts = [...(last.parts ?? []), ...images.map((img) => ({ inlineData: { mimeType: img.mimeType, data: img.data } }))];
+    }
+
+    return contents;
+}
+
+/** HARM_CATEGORY_* names Google explicitly blocked this response for. */
+function blockedCategories(candidate: unknown): string[] {
+    const ratings = (candidate as { safetyRatings?: unknown } | null | undefined)?.safetyRatings;
+    if (!Array.isArray(ratings)) return [];
+    return ratings.flatMap((rating) => {
+        const r = rating as { blocked?: unknown; category?: unknown } | null;
+        return r?.blocked === true && typeof r.category === 'string' ? [r.category] : [];
+    });
+}
+
+/** Non-SAFETY finish reasons that still mean "the response content was withheld". */
+const BLOCK_FINISH_REASONS: ReadonlySet<string> = new Set(['BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII']);
+
+function toChatResult(
+    response: GenerateContentResponse,
+    thinking: ThinkingLevel,
+    structured: boolean,
+): ChatResult {
+    const text = response.text ?? '';
+    const candidate = response.candidates?.[0];
+    const finishReason = typeof candidate?.finishReason === 'string' ? candidate.finishReason : null;
+    const categories = blockedCategories(candidate);
+    const feedback = (response as { promptFeedback?: { blockReason?: unknown } }).promptFeedback;
+
+    // Any promptFeedback.blockReason means the prompt itself was rejected.
+    const safetyTriggered =
+        finishReason === 'SAFETY' ||
+        categories.length > 0 ||
+        (feedback?.blockReason != null && feedback.blockReason !== '') ||
+        (!text && finishReason != null && BLOCK_FINISH_REASONS.has(finishReason));
+    if (!text && safetyTriggered) {
+        throw new SafetyBlockedError(`Safety filter blocked the response (finishReason=${finishReason ?? 'unknown'}).`, categories, {
+            finishReason,
+            categories,
+            promptFeedback: feedback ?? null,
+        });
+    }
+
+    const usageRaw = (response as unknown as { usageMetadata?: Record<string, unknown> }).usageMetadata;
+    const num = (v: unknown): number | undefined =>
+        typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+    const usage = usageRaw
+        ? {
+              promptTokens: num(usageRaw.promptTokenCount),
+              candidatesTokens: num(usageRaw.candidatesTokenCount),
+              thoughtsTokens: num(usageRaw.thoughtsTokenCount),
+              totalTokens: num(usageRaw.totalTokenCount),
+          }
+        : undefined;
+
+    if (!text) {
+        console.warn('[ai] empty model text', {
+            model: MODEL,
+            finishReason,
+            usage,
+            thinking: String(thinking),
+            structured,
+        });
+    }
+    return { text, model: response.modelVersion ?? MODEL, thinking, finishReason, usage };
+}
+
 export async function chat(options: ChatOptions): Promise<ChatResult> {
-    const contents = toContents(options.messages, options.images);
     const isStructured = Boolean(options.schema);
     const thinking = options.thinking ?? (isStructured ? ThinkingLevel.LOW : ThinkingLevel.HIGH);
-    const auto = pickGenParams();
-    const structuredAuto = pickStructuredParams();
+    const params = isStructured ? STRUCTURED : CASUAL;
     const config: GenerateContentConfig = {
-        temperature: options.temperature ?? (isStructured ? structuredAuto.temperature : auto.temperature),
+        temperature: options.temperature ?? params.temperature,
+        maxOutputTokens: options.maxTokens ?? params.maxTokens,
         thinkingConfig: { thinkingLevel: thinking },
+        safetySettings: SAFETY_SETTINGS,
     };
     if (options.system) config.systemInstruction = options.system;
-    config.maxOutputTokens = options.maxTokens ?? (isStructured ? structuredAuto.maxTokens : auto.maxTokens);
     // 2 images max and only for casual image chat — LOW keeps vision tokens ~280/img.
     if (options.images?.length) config.mediaResolution = MediaResolution.MEDIA_RESOLUTION_LOW;
     if (options.schema) {
@@ -211,52 +325,21 @@ export async function chat(options: ChatOptions): Promise<ChatResult> {
         config.responseSchema = options.schema as never;
     }
 
-    return resilientCall(async (client) => {
-        const response: GenerateContentResponse = await client.models.generateContent({
-            model: DEFAULT_MODEL,
-            contents,
-            config,
-        });
-        const text = response.text ?? '';
-        const candidate = (response as { candidates?: Array<{ finishReason?: unknown }> }).candidates?.[0];
-        const finishReason =
-            typeof candidate?.finishReason === 'string' ? candidate.finishReason : null;
-        const usageRaw = (response as unknown as { usageMetadata?: Record<string, unknown> }).usageMetadata;
-        const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
-        const usage = usageRaw
-            ? {
-                  promptTokens: num(usageRaw.promptTokenCount),
-                  candidatesTokens: num(usageRaw.candidatesTokenCount),
-                  thoughtsTokens: num(usageRaw.thoughtsTokenCount),
-                  totalTokens: num(usageRaw.totalTokenCount),
-              }
-            : undefined;
-        if (!text) {
-            console.warn('[ai] empty model text', {
-                model: DEFAULT_MODEL,
-                finishReason,
-                usage,
-                thinking: String(thinking),
-                structured: isStructured,
-            });
-        }
-        return { text, model: response.modelVersion ?? DEFAULT_MODEL, thinking, finishReason, usage };
-    }, options.apiKey);
+    const contents = toContents(options.messages, options.images);
+    return resilientCall(
+        async (client) => {
+            const response = await client.models.generateContent({ model: MODEL, contents, config });
+            return toChatResult(response, thinking, isStructured);
+        },
+        options.apiKey,
+    );
 }
+
+// ----------------------------------------------------------- grounded search
 
 export interface GroundedResult {
     text: string;
     sources: Array<{ title: string | null; uri: string | null }>;
-}
-
-function extractGrounded(response: GenerateContentResponse): GroundedResult {
-    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
-    const sources = chunks
-        .map((chunk) => ({ title: chunk.web?.title ?? null, uri: chunk.web?.uri ?? null }))
-        .filter((s): s is { title: string | null; uri: string | null } => Boolean(s.uri))
-        .slice(0, 5);
-
-    return { text: response.text ?? '', sources };
 }
 
 export async function groundedSearch(query: string, apiKey?: string): Promise<GroundedResult> {
@@ -266,17 +349,23 @@ export async function groundedSearch(query: string, apiKey?: string): Promise<Gr
         maxOutputTokens: 800,
         thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         tools: [{ googleSearch: {} }],
+        safetySettings: SAFETY_SETTINGS,
     };
 
     return resilientCall(async (client) => {
-        const response = await client.models.generateContent({
-            model: DEFAULT_MODEL,
-            contents,
-            config,
-        });
-        return extractGrounded(response);
+        const response = await client.models.generateContent({ model: MODEL, contents, config });
+        const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+        const sources = chunks
+            .flatMap((chunk) => {
+                const uri = chunk.web?.uri ?? null;
+                return uri ? [{ title: chunk.web?.title ?? null, uri }] : [];
+            })
+            .slice(0, 5);
+        return { text: response.text ?? '', sources };
     }, apiKey);
 }
+
+// ----------------------------------------------------------- key validation
 
 export interface KeyCheckResult {
     valid: boolean;

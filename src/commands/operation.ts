@@ -1,7 +1,8 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChatInputCommandInteraction, TextChannel } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ChatInputCommandInteraction, TextChannel } from 'discord.js';
 import { Users } from '../db/database.js';
 import { isOwner, isModerator, getLogChannel, getBadge } from '../config/config.js';
 import { baseEmbed } from '../utils/embeds.js';
+import { blacklistUser } from '../utils/blacklistUtil.js';
 import type { Command } from '../types/index.js';
 
 export default {
@@ -96,6 +97,12 @@ export default {
 const embed = (interaction: ChatInputCommandInteraction, title: string, desc: string, color: number) =>
     baseEmbed(interaction, title, '```md\n' + desc + '\n```', color);
 
+/** Badge replies + the premium log share this one-off shape (no ```md wrapper). */
+const styledEmbed = (title: string, description: string, color: number, footer?: string): EmbedBuilder => {
+    const styled = new EmbedBuilder().setTitle(title).setDescription(description).setColor(color).setTimestamp();
+    return footer ? styled.setFooter({ text: footer }) : styled;
+};
+
 const fetchTag = (client: any, id: string) =>
     client.users.fetch(id).then((u: any) => u.tag).catch(() => 'Unknown User');
 
@@ -111,69 +118,19 @@ async function handleBlacklist(interaction: ChatInputCommandInteraction, action:
 async function blAdd(interaction: ChatInputCommandInteraction, userId: string) {
     const reason = interaction.options.getString('reason') || 'No reason provided.';
 
-    {
-        const gate = await Users.getGateData(userId);
-        if (gate.blacklisted) {
-            await interaction.editReply({
-                embeds: [embed(interaction, '⚠️ Already Blacklisted', `# User <@${userId}> is already blacklisted.\n> Reason: ${gate.reason || 'Unknown'}`, 0xffa500)],
-            });
-            return;
-        }
-    }
+    const outcome = await blacklistUser({
+        client: interaction.client,
+        userId,
+        reason,
+        moderatorTag: interaction.user.tag,
+        moderatorId: interaction.user.id,
+    });
 
-    // blacklist() throws for never-seen users — ensure the doc first.
-    await Users.ensure(userId);
-    await Users.blacklist(userId, reason);
-
-    const logChannelId = getLogChannel('blacklist');
-    if (logChannelId) {
-        try {
-            const ch = await interaction.client.channels.fetch(logChannelId);
-            if (ch instanceof TextChannel) {
-                await ch.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setTitle('⛔ User Blacklisted')
-                            .setDescription(
-                                '```md\n' +
-                                `# User Information\n> ID: ${userId}\n> Tag: ${await fetchTag(interaction.client, userId)}\n\n` +
-                                `# Reason\n> ${reason}\n\n` +
-                                `# Moderator\n> ${interaction.user.tag} (${interaction.user.id})\n` +
-                                '```'
-                            )
-                            .setColor(0xff6f91)
-                            .setTimestamp()
-                            .setFooter({ text: 'Alice Blacklist Logs' }),
-                    ],
-                });
-            }
-        } catch {
-            // Logging must never fail the command.
-        }
-    }
-
-    try {
-        const user = await interaction.client.users.fetch(userId);
-        await user.send({
-            embeds: [
-                new EmbedBuilder()
-                    .setTitle('🚫 Blacklisted!')
-                    .setDescription(
-                        '```md\n' +
-                        `# Oh no! You've been blacklisted from Alice.\n> Reason: ${reason}\n---\nWant to appeal? Click the button below or join the support server.\n` +
-                        '```'
-                    )
-                    .setColor(0xffb6c1)
-                    .setThumbnail(interaction.client.user?.displayAvatarURL() || null),
-            ],
-            components: [
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                    new ButtonBuilder().setLabel('✨ Appeal / Support ✨').setStyle(ButtonStyle.Link).setURL('https://discord.gg/JypKEEqPfT')
-                ),
-            ],
+    if (!outcome.added) {
+        await interaction.editReply({
+            embeds: [embed(interaction, '⚠️ Already Blacklisted', `# User <@${userId}> is already blacklisted.\n> Reason: ${outcome.existingReason || 'Unknown'}`, 0xffa500)],
         });
-    } catch {
-        // Closed DMs are not fatal.
+        return;
     }
 
     await interaction.editReply({ embeds: [embed(interaction, '✅ Blacklisted', `# <@${userId}> has been blacklisted.\n> Reason: ${reason}`, 0x00ff00)] });
@@ -232,18 +189,16 @@ async function prAdd(interaction: ChatInputCommandInteraction, userId: string) {
             if (ch instanceof TextChannel) {
                 await ch.send({
                     embeds: [
-                        new EmbedBuilder()
-                            .setTitle('✨ Premium Status Added')
-                            .setDescription(
-                                '```md\n' +
+                        styledEmbed(
+                            '✨ Premium Status Added',
+                            '```md\n' +
                                 `# User Information\n> ID: ${userId}\n> Tag: ${await fetchTag(interaction.client, userId)}\n\n` +
                                 `# Premium Details\n> Expiry: ${expiryStr}\n\n` +
                                 `# Moderator\n> ${interaction.user.tag} (${interaction.user.id})\n` +
-                                '```'
-                            )
-                            .setColor(0xffd700)
-                            .setTimestamp()
-                            .setFooter({ text: 'Alice Premium Logs' }),
+                                '```',
+                            0xffd700,
+                            'Alice Premium Logs',
+                        ),
                     ],
                 });
             }
@@ -301,12 +256,12 @@ async function bgAdd(interaction: ChatInputCommandInteraction, userId: string, b
     await Users.addBadge(userId, badgeName);
     await interaction.editReply({
         embeds: [
-            new EmbedBuilder()
-                .setTitle('🎖️ Badge Awarded!')
-                .setDescription(`### Badge Added\n${badgeDisplay}\n\n🎯 Given to: <@${userId}>\n👤 By: <@${interaction.user.id}>`)
-                .setColor(0xffd700)
-                .setFooter({ text: 'Alice Badge System' })
-                .setTimestamp(),
+            styledEmbed(
+                '🎖️ Badge Awarded!',
+                `### Badge Added\n${badgeDisplay}\n\n🎯 Given to: <@${userId}>\n👤 By: <@${interaction.user.id}>`,
+                0xffd700,
+                'Alice Badge System',
+            ),
         ],
     });
 }
@@ -320,12 +275,12 @@ async function bgRemove(interaction: ChatInputCommandInteraction, userId: string
     await Users.removeBadge(userId, badgeName);
     await interaction.editReply({
         embeds: [
-            new EmbedBuilder()
-                .setTitle('💫 Badge Removed')
-                .setDescription(`### Badge Removed\n${badgeDisplay}\n\n🎯 Removed from: <@${userId}>\n👤 By: <@${interaction.user.id}>`)
-                .setColor(0xff6b6b)
-                .setFooter({ text: 'Alice Badge System' })
-                .setTimestamp(),
+            styledEmbed(
+                '💫 Badge Removed',
+                `### Badge Removed\n${badgeDisplay}\n\n🎯 Removed from: <@${userId}>\n👤 By: <@${interaction.user.id}>`,
+                0xff6b6b,
+                'Alice Badge System',
+            ),
         ],
     });
 }
@@ -341,12 +296,6 @@ async function bgCheck(interaction: ChatInputCommandInteraction, userId: string)
 
     const badgeList = badges.map(b => getBadge(b) || b).join('\n');
     await interaction.editReply({
-        embeds: [
-            new EmbedBuilder()
-                .setTitle('🎖️ User Badges')
-                .setDescription(`# <@${userId}>\n\n${badgeList}`)
-                .setColor(0xffd700)
-                .setTimestamp(),
-        ],
+        embeds: [styledEmbed('🎖️ User Badges', `# <@${userId}>\n\n${badgeList}`, 0xffd700)],
     });
 }

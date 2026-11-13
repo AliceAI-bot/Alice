@@ -6,11 +6,12 @@ interface Config {
     moderators: string[];
     logs: {
         blacklist: string;
+        'flagged_Content': string;
         premium: string;
     };
-  devGuild: string;
-  badges: Record<string, string>;
-  emojis: { name: string; emoji: string }[];
+    devGuild: string;
+    badges: Record<string, string>;
+    emojis: { name: string; emoji: string }[];
 }
 
 let config: Config;
@@ -39,7 +40,9 @@ export function isModerator(userId: string | number): boolean {
     return cfg.moderators.includes(idStr);
 }
 
-export function getLogChannel(type: 'blacklist' | 'premium'): string {
+export type LogChannelType = 'blacklist' | 'flagged_Content' | 'premium';
+
+export function getLogChannel(type: LogChannelType): string {
     const cfg = getConfig();
     return cfg.logs[type];
 }

@@ -121,16 +121,14 @@ export async function checkVoteCached(
     return voted;
 }
 
-export async function checkVote(userId: string, forceRefresh = false): Promise<boolean> {
-    let state;
+async function checkVoteForced(userId: string): Promise<boolean> {
     try {
-        state = await getUserState(userId);
+        return await checkVoteCached(userId, await getUserState(userId), true);
     } catch {
-        const voted = await rateLimited(() => queryTopggVote(userId));
+        // State lookup unavailable — settle with a direct vote query.
+        const voted = await refreshVote(userId);
         return voted ?? false;
     }
-
-    return checkVoteCached(userId, state, forceRefresh);
 }
 
 export interface VotePrompt {
@@ -144,11 +142,12 @@ export async function isVoter(
     botId?: string,
 ): Promise<VotePrompt | null> {
     const user = await Users.get(userId);
-    if (user?.tier === 'premium') return null;
+    // BYOK users already bring their own key — no vote needed, same as premium.
+    if (user?.tier === 'premium' || user?.tier === 'byok') return null;
 
     // Vote gates are low-frequency: always revalidate live so a fresh vote
     // unlocks instantly instead of staying blocked on a stale negative cache.
-    const hasVoted = await checkVote(userId, true);
+    const hasVoted = await checkVoteForced(userId);
     if (hasVoted) return null;
 
     const embed = new EmbedBuilder()
