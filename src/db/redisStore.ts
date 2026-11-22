@@ -2,11 +2,11 @@ import redisClient from '../integrations/redis.js';
 import { normalizeRelationship } from '../utils/relationship.js';
 import type { RelationshipState } from '../utils/relationship.js';
 
-export const SESSION_TTL_SECONDS = 3 * 60 * 60;
+const SESSION_TTL_SECONDS = 3 * 60 * 60;
 export const SESSION_MAX_MESSAGES = 30;
 // Only the tail is sent to the model; the head is covered by the rolling summary.
 export const SESSION_MODEL_WINDOW = 14;
-export const SUMMARY_TTL_SECONDS = 3 * 60 * 60;
+const SUMMARY_TTL_SECONDS = 3 * 60 * 60;
 
 const USER_TTL_SECONDS = 24 * 60 * 60;
 export const VOTE_FRESH_MS = 60 * 60 * 1000;
@@ -51,7 +51,7 @@ export interface SessionSummary {
     coveredUpTo: number;
 }
 
-export function summaryKey(sessionKeyValue: string): string {
+function summaryKey(sessionKeyValue: string): string {
     return `${sessionKeyValue}:summary`;
 }
 
@@ -119,7 +119,7 @@ export function usageToday(): string {
     return date;
 }
 
-export function emptyUserState(): UserState {
+function emptyUserState(): UserState {
     return { rel: null, usage: { day: usageToday(), count: 0 }, vote: null, ignoredUntil: null };
 }
 

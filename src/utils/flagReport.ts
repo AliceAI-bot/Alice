@@ -51,10 +51,6 @@ function flagReason(info: FlagInfo): string {
     return `AI safety filter — ${info.categories.map(prettyCategory).join(', ')}`;
 }
 
-function flagDebounceKey(userId: string): string {
-    return `flag:${userId}`;
-}
-
 function buildTranscript(info: FlagInfo, session: SessionMessage[]): AttachmentBuilder {
     const lines: string[] = [
         'Alice — flagged content report',
@@ -71,8 +67,9 @@ function buildTranscript(info: FlagInfo, session: SessionMessage[]): AttachmentB
         lines.push(`[${new Date(m.ts).toISOString()}] ${who} (${m.authorId}): ${m.content.replace(/\r?\n/g, ' | ')}`);
     }
     const body = lines.join('\n');
-    const truncated = body.length > MAX_TRANSCRIPT_CHARS;
-    const text = truncated ? `${body.slice(0, MAX_TRANSCRIPT_CHARS)}\n... (truncated)\n` : `${body}\n`;
+    const text = body.length > MAX_TRANSCRIPT_CHARS
+        ? `${body.slice(0, MAX_TRANSCRIPT_CHARS)}\n... (truncated)\n`
+        : `${body}\n`;
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     return new AttachmentBuilder(Buffer.from(text, 'utf-8'), { name: `flag-${stamp}.txt` });
 }
@@ -130,7 +127,8 @@ export async function reportFlaggedContent(client: Client, info: FlagInfo): Prom
 
     try {
         // SET NX: null/undefined means a related report is already pending.
-        const debounce = await redisClient.set(flagDebounceKey(info.userId), '1', {
+        const debounceKey = `flag:${info.userId}`;
+        const debounce = await redisClient.set(debounceKey, '1', {
             NX: true,
             PX: FLAG_DEBOUNCE_MS,
         });
@@ -140,7 +138,7 @@ export async function reportFlaggedContent(client: Client, info: FlagInfo): Prom
         await channel.send(buildFlagPayload(client, info, buildTranscript(info, session)));
     } catch (err) {
         // Release the debounce so the next flag in this window can retry.
-        await redisClient.del(flagDebounceKey(info.userId)).catch(() => null);
+        await redisClient.del(`flag:${info.userId}`).catch(() => null);
         console.warn('[flags] reporting flagged content failed:', err instanceof Error ? err.message : err);
     }
 }
@@ -149,12 +147,16 @@ function deny(): InteractionReplyOptions {
     return { content: 'You need moderator permissions to use this.', flags: 64 };
 }
 
+function canModerate(userId: string): boolean {
+    return isModerator(userId) || isOwner(userId);
+}
+
 /** Locked action row shown on the report after Blacklist/Close is handled. */
-const resolveRow = (denied: boolean): ActionRowBuilder<ButtonBuilder> =>
+const resolveRow = (blacklisted: boolean): ActionRowBuilder<ButtonBuilder> =>
     new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
             .setCustomId(`${FLAG_BLACKLIST_PREFIX}done`)
-            .setLabel(denied ? '✅ User Blacklisted' : '🚫 Blacklist User')
+            .setLabel(blacklisted ? '✅ User Blacklisted' : '🚫 Blacklist User')
             .setStyle(ButtonStyle.Danger)
             .setDisabled(true),
         new ButtonBuilder()
@@ -163,6 +165,21 @@ const resolveRow = (denied: boolean): ActionRowBuilder<ButtonBuilder> =>
             .setStyle(ButtonStyle.Secondary)
             .setDisabled(true),
     );
+
+async function updateReport(
+    interaction: ModalSubmitInteraction | ButtonInteraction,
+    note: string,
+    blacklisted: boolean,
+): Promise<void> {
+    const source = interaction.message?.embeds[0];
+    const updated = source
+        ? new EmbedBuilder(source.data).addFields({ name: '🛡️ Action', value: note })
+        : null;
+    await interaction.editReply({
+        embeds: updated ? [updated] : [],
+        components: [resolveRow(blacklisted)],
+    }).catch(() => null);
+}
 
 function buildBlacklistModal(userId: string, prefill: string): ModalBuilder {
     return new ModalBuilder()
@@ -184,7 +201,7 @@ function buildBlacklistModal(userId: string, prefill: string): ModalBuilder {
 
 /** Modal submit on the report's Blacklist button — the mod wrote the reason. */
 export async function handleFlagBlacklistModal(interaction: ModalSubmitInteraction): Promise<void> {
-    if (!isModerator(interaction.user.id) && !isOwner(interaction.user.id)) {
+    if (!canModerate(interaction.user.id)) {
         await interaction.reply(deny()).catch(() => null);
         return;
     }
@@ -209,41 +226,33 @@ export async function handleFlagBlacklistModal(interaction: ModalSubmitInteracti
     const note = outcome.added
         ? `🛡️ User blacklisted by ${interaction.user.tag} — reason: ${reason}`
         : `⚠️ User was already blacklisted (reason: ${outcome.existingReason || 'unknown'}) — no action taken`;
-    const updated = interaction.message?.embeds[0]
-        ? new EmbedBuilder(interaction.message.embeds[0].data).addFields({ name: '🛡️ Action', value: note })
-        : null;
-    await interaction.editReply({ embeds: updated ? [updated] : [], components: [resolveRow(true)] }).catch(() => null);
+    await updateReport(interaction, note, true);
 }
 
 /** Blacklist/Close buttons on flag reports — moderators and devs only. */
 export async function handleFlagButton(interaction: ButtonInteraction): Promise<void> {
-    if (!isModerator(interaction.user.id) && !isOwner(interaction.user.id)) {
+    if (!canModerate(interaction.user.id)) {
         await interaction.reply(deny()).catch(() => null);
         return;
     }
 
-    const embed = interaction.message.embeds[0];
-    const reason =
-        embed?.fields.find((f) => f.name === 'Reason')?.value?.trim() || 'AI safety violation';
+    const isBlacklist = interaction.customId.startsWith(FLAG_BLACKLIST_PREFIX);
+    const prefix = isBlacklist ? FLAG_BLACKLIST_PREFIX : FLAG_CLOSE_PREFIX;
+    const raw = interaction.customId.slice(prefix.length);
 
-    if (interaction.customId.startsWith(FLAG_BLACKLIST_PREFIX)) {
-        const raw = interaction.customId.slice(FLAG_BLACKLIST_PREFIX.length);
-        if (raw === 'done') {
-            await interaction.deferUpdate().catch(() => null);
-            return;
-        }
+    if (raw === 'done') {
+        await interaction.deferUpdate().catch(() => null);
+        return;
+    }
+
+    if (isBlacklist) {
+        const reason =
+            interaction.message.embeds[0]?.fields.find((f) => f.name === 'Reason')?.value?.trim()
+            || 'AI safety violation';
         await interaction.showModal(buildBlacklistModal(raw, reason)).catch(() => null);
         return;
     }
 
-    if (interaction.customId.startsWith(FLAG_CLOSE_PREFIX)) {
-        const raw = interaction.customId.slice(FLAG_CLOSE_PREFIX.length);
-        if (raw === 'done') {
-            await interaction.deferUpdate().catch(() => null);
-            return;
-        }
-        await interaction.deferUpdate();
-        const updated = interaction.message.embeds[0] ? new EmbedBuilder(interaction.message.embeds[0].data).addFields({ name: '🛡️ Action', value: `✅ Closed by ${interaction.user.tag}` }) : null;
-        await interaction.editReply({ embeds: updated ? [updated] : [], components: [resolveRow(false)] }).catch(() => null);
-    }
+    await interaction.deferUpdate();
+    await updateReport(interaction, `✅ Closed by ${interaction.user.tag}`, false);
 }

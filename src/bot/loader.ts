@@ -15,13 +15,19 @@ const EVENTS_DIR = join(ROOT, 'dist', 'src', 'events');
 
 const DEV_GUILD = getDevGuild();
 
+type CommandJSON = ReturnType<Command['data']['toJSON']>;
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
 export async function ready(client: CustomClient): Promise<void> {
     await loadEvents(client);
     const commands = await loadCommands(client);
     await deployCommands(client, commands);
 }
 
-export async function loadEvents(client: CustomClient): Promise<void> {
+async function loadEvents(client: CustomClient): Promise<void> {
     const files = await getFiles(EVENTS_DIR);
     let loaded = 0;
     for (const file of files) {
@@ -29,7 +35,8 @@ export async function loadEvents(client: CustomClient): Promise<void> {
             const mod = await import(pathToFileURL(file).href);
             const event: Event = mod.default ?? mod;
             if (!event?.name || typeof event.execute !== 'function') continue;
-            const handler = (...args: unknown[]) => (event.execute as any)(...args, client);
+            const handler = (...args: unknown[]) =>
+                (event.execute as (...args: unknown[]) => void | Promise<void>)(...args, client);
             event.once ? client.once(event.name, handler) : client.on(event.name, handler);
             loaded++;
         } catch (err) {
@@ -39,7 +46,7 @@ export async function loadEvents(client: CustomClient): Promise<void> {
     console.log(`[events] Loaded: ${loaded}`);
 }
 
-export async function loadCommands(client: CustomClient): Promise<Command[]> {
+async function loadCommands(client: CustomClient): Promise<Command[]> {
     const files = await getFiles(COMMANDS_DIR);
     const commands: Command[] = [];
     let loaded = 0;
@@ -59,15 +66,16 @@ export async function loadCommands(client: CustomClient): Promise<Command[]> {
     return commands;
 }
 
-export async function deployCommands(client: CustomClient, commands: Command[]): Promise<void> {
+async function deployCommands(client: CustomClient, commands: Command[]): Promise<void> {
     const token = loadEnv('token');
     if (!token) {
         console.error('[deploy] ❌ Missing token in .env — skipping command registration');
         return;
     }
     const rest = new REST({ version: '10' }).setToken(token);
-    const globalCmds = commands.filter(c => c.global).map(c => c.data.toJSON());
-    const devCmds = commands.filter(c => !c.global).map(c => c.data.toJSON());
+    const clientId = client.user!.id;
+    const globalCmds = commands.filter((c) => c.global).map((c) => c.data.toJSON());
+    const devCmds = commands.filter((c) => !c.global).map((c) => c.data.toJSON());
 
     if (client.cluster?.id === 0) {
         const fingerprint = createHash('sha256')
@@ -78,23 +86,20 @@ export async function deployCommands(client: CustomClient, commands: Command[]):
         } else {
             let deployed = false;
             if (globalCmds.length) {
-                await rest.put(Routes.applicationCommands(client.user!.id), { body: globalCmds });
+                await rest.put(Routes.applicationCommands(clientId), { body: globalCmds });
                 console.log(`[deploy] 🌍 ${globalCmds.length} global command(s) — propagating to all servers`);
                 deployed = true;
             }
 
             if (DEV_GUILD && devCmds.length) {
                 try {
-                    await rest.put(
-                        Routes.applicationGuildCommands(client.user!.id, DEV_GUILD),
-                        { body: devCmds }
-                    );
+                    await syncDevGuild(rest, clientId, DEV_GUILD, devCmds);
                     console.log(`[deploy] ⚡ Dev guild ${DEV_GUILD}: ${devCmds.length} command(s) synced instantly`);
                     deployed = true;
-                } catch (error: any) {
+                } catch (error) {
                     console.error(
-                        `[deploy] ⚠️ Dev guild ${DEV_GUILD} sync skipped (${error?.message ?? error}) — ` +
-                        'booting anyway; will retry when the bot joins that guild'
+                        `[deploy] ⚠️ Dev guild ${DEV_GUILD} sync skipped (${errorMessage(error)}) — ` +
+                        'booting anyway; will retry when the bot joins that guild',
                     );
                 }
             }
@@ -109,18 +114,24 @@ export async function deployCommands(client: CustomClient, commands: Command[]):
             if (guild.id !== DEV_GUILD || !devCmds.length) return;
 
             try {
-                await rest.put(
-                    Routes.applicationGuildCommands(client.user!.id, guild.id),
-                    { body: devCmds }
-                );
+                await syncDevGuild(rest, clientId, guild.id, devCmds);
                 console.log(`[deploy] ⚡ Dev guild ${guild.name}: ${devCmds.length} command(s) synced instantly`);
-            } catch (error: any) {
-                console.error(`[deploy] ❌ ${guild.name}:`, error.message);
+            } catch (error) {
+                console.error(`[deploy] ❌ ${guild.name}:`, errorMessage(error));
             }
         });
     }
 
     console.log('[deploy] ✅ Ready — global propagation in progress, dev guild live');
+}
+
+function syncDevGuild(
+    rest: REST,
+    clientId: string,
+    guildId: string,
+    commands: CommandJSON[],
+): Promise<unknown> {
+    return rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
 }
 
 const CACHE_DIR = join(ROOT, '.deploy-cache');
@@ -146,8 +157,10 @@ async function getFiles(dir: string): Promise<string[]> {
     let entries;
     try {
         entries = await readdir(dir, { withFileTypes: true });
-    } catch (error: any) {
-        if (error?.code === 'ENOENT') throw new Error(`Command/event dir missing (did you run npm run build?): ${dir}`);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            throw new Error(`Command/event dir missing (did you run npm run build?): ${dir}`);
+        }
         throw error;
     }
     const files: string[] = [];

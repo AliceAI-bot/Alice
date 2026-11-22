@@ -6,7 +6,7 @@ export default {
     data: new SlashCommandBuilder()
         .setName('invite')
         .setDescription('Get invitation links for Alice!'),
-    
+
     global: true,
     cooldown: 5,
     execute: async (interaction: ChatInputCommandInteraction) => {

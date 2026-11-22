@@ -18,14 +18,11 @@ import { applyMonthlyDecay, clamp, deriveStatus, normalizeRelationship } from '.
 import type { RelationshipState } from '../utils/relationship.js';
 import {
     AiError,
-    AiMessage,
-    AiToolExecutor,
     ALICE_TURN_SCHEMA,
     parseAliceTurn,
     toolRequestArgs,
-    ToolContext,
 } from '../types/ai.js';
-import type { AliceTurn } from '../types/ai.js';
+import type { AiMessage, AiToolExecutor, AliceTurn, ToolContext } from '../types/ai.js';
 import { ThinkingLevel } from '@google/genai';
 import { chat, SafetyBlockedError } from '../integrations/google.js';
 import type { ChatImage } from '../integrations/google.js';
@@ -46,9 +43,7 @@ import { blockedLine } from './voiceLines.js';
 export interface ProcessResult {
     content: string;
     emotion: string;
-    degraded: boolean;
-    toolsUsed: string[];
-    /** When set, the pipeline replies with this embed instead of `content` bubbles. */
+    /** When set, the pipeline replies with this embed instead of plain text. */
     embed?: EmbedBuilder;
     components?: ActionRowBuilder<ButtonBuilder>[];
 }
@@ -61,6 +56,8 @@ const MEMORY_MAX_CHARS = 160;
 const MEMORY_MAX_SLOTS = 30;
 
 const MAX_SANE_REPLY_LENGTH = 1800;
+const MAX_TOOL_ROUNDS = 2;
+const MODEL_ROW_CAP = 500;
 
 /** Degraded turn placeholder — the user gets an embed, never a fake message. */
 function neutralTurn(): AliceTurn {
@@ -73,30 +70,19 @@ function neutralTurn(): AliceTurn {
     };
 }
 
-/** Compact, human-readable reason for the error embed Details field. */
-function describeError(err: unknown): string {
-    if (err instanceof AiError) {
-        return `Gemini error${err.status ? ` (HTTP ${err.status})` : ''}: ${err.message}`;
-    }
-    return err instanceof Error ? err.message : String(err);
-}
-
 async function askAlice(
     system: string,
     messages: AiMessage[],
     apiKey?: string,
     images?: ChatImage[],
-): Promise<{ turn: AliceTurn; thinking: string }> {
-    let lastThinking = 'unknown';
-    let lastDiagnostics: { textLen: number; finishReason: string | null; model: string; preview: string } = {
+): Promise<AliceTurn> {
+    let lastDiagnostics: { textLen: number; finishReason: string | null } = {
         textLen: 0,
         finishReason: 'unknown',
-        model: 'unknown',
-        preview: '',
     };
     for (let attempt = 0; attempt < 2; attempt++) {
         const isRetry = attempt === 1;
-        const { text, thinking, model, finishReason } = await chat({
+        const { text, model, finishReason } = await chat({
             system,
             // Retry with an explicit JSON-only nudge (new array — never mutate the caller's history).
             messages: isRetry
@@ -108,15 +94,12 @@ async function askAlice(
             ...(apiKey ? { apiKey } : {}),
             ...(images?.length ? { images } : {}),
         });
-        lastThinking = String(thinking);
         lastDiagnostics = {
             textLen: text.length,
             finishReason: finishReason ?? 'unknown',
-            model,
-            preview: text.slice(0, 300),
         };
         const turn = parseAliceTurn(text);
-        if (turn) return { turn, thinking: lastThinking };
+        if (turn) return turn;
         console.warn('[ai] Alice turn parse failed', {
             attempt: attempt + 1,
             model,
@@ -127,12 +110,8 @@ async function askAlice(
     }
     throw new AiError(
         `Model produced unusable structured output (lastFinish=${lastDiagnostics.finishReason} lastLen=${lastDiagnostics.textLen}).`,
-        0,
-        lastDiagnostics,
     );
 }
-
-const MAX_TOOL_ROUNDS = 2;
 
 async function converse(
     system: string,
@@ -140,15 +119,11 @@ async function converse(
     executor: AiToolExecutor,
     apiKey?: string,
     images?: ChatImage[],
-): Promise<{ turn: AliceTurn; thinking: string; toolsUsed: string[] }> {
-    const toolsUsed: string[] = [];
-    let thinking = 'unknown';
+): Promise<AliceTurn> {
     for (let round = 0; ; round++) {
-        const res = await askAlice(system, messages, apiKey, images);
-        thinking = res.thinking;
-        const turn = res.turn;
+        const turn = await askAlice(system, messages, apiKey, images);
 
-        if (!turn.toolCall) return { turn, thinking, toolsUsed };
+        if (!turn.toolCall) return turn;
 
         if (round >= MAX_TOOL_ROUNDS) {
             console.warn('[ai] Tool budget exhausted; requesting direct reply.');
@@ -156,11 +131,10 @@ async function converse(
                 role: 'user',
                 content: '[system] Tools off. Reply in message now.',
             });
-            const finalRes = await askAlice(system, messages, apiKey, images);
-            return { turn: { ...finalRes.turn, toolCall: null }, thinking: finalRes.thinking, toolsUsed };
+            const finalTurn = await askAlice(system, messages, apiKey, images);
+            return { ...finalTurn, toolCall: null };
         }
 
-        toolsUsed.push(turn.toolCall.name);
         let observation: unknown;
         try {
             observation = await executor(turn.toolCall.name, toolRequestArgs(turn.toolCall));
@@ -187,9 +161,9 @@ async function generate(
     executor: AiToolExecutor,
     byokKey?: string,
     images?: ChatImage[],
-): Promise<{ reply: string; turn: AliceTurn; degraded: boolean; thinking: string; toolsUsed: string[]; error?: unknown }> {
+): Promise<{ reply: string; turn: AliceTurn; degraded: boolean; error?: unknown }> {
     try {
-        const { turn, thinking, toolsUsed } = await converse(system, messages, executor, byokKey, images);
+        const turn = await converse(system, messages, executor, byokKey, images);
 
         const reply = turn.message.trim();
         if (!reply || reply.length > MAX_SANE_REPLY_LENGTH) {
@@ -198,15 +172,13 @@ async function generate(
                 reply: '',
                 turn: neutralTurn(),
                 degraded: true,
-                thinking,
-                toolsUsed,
                 error: new Error('Model returned an empty or oversized response.'),
             };
         }
-        return { reply, turn, degraded: false, thinking, toolsUsed };
+        return { reply, turn, degraded: false };
     } catch (error) {
         console.error('Generation failed:', error);
-        return { reply: '', turn: neutralTurn(), degraded: true, thinking: 'error', toolsUsed: [], error };
+        return { reply: '', turn: neutralTurn(), degraded: true, error };
     }
 }
 
@@ -249,7 +221,7 @@ async function handleProcess(
     persona: string | null,
     opts: ProcessOptions,
 ): Promise<ProcessResult | null> {
-    const author = message.author!;
+    const author = message.author;
     const userId = author.id;
     const now = Date.now();
 
@@ -262,9 +234,8 @@ async function handleProcess(
     if (user.blacklisted) return null;
 
     const botId = message.client.user?.id ?? null;
-    const rawContent = message.content ?? '';
     // Bare mention with nothing else is not a message — never fire an LLM turn on it.
-    const content = stripBotMention(rawContent, botId);
+    const content = stripBotMention(message.content, botId);
     if (!content) return null;
 
     // Ignored-but-listening: silence by default, apology-like texts can unignore.
@@ -284,27 +255,22 @@ async function handleProcess(
     const isByok = Boolean(byokKey);
     if (usage.blocked) {
         const { embed, components } = quotaEmbed(message.client, usage.blocked.quota, usage.blocked.bonus);
-        return { content: '', emotion: 'sad', degraded: true, toolsUsed: [], embed, components };
+        return { content: '', emotion: 'sad', embed, components };
     }
 
     // Decay always runs — the hot Redis path is the common case, not the fallback.
     const decayResult = applyMonthlyDecay(normalizeRelationship(state.rel ?? user.relationship), now);
-    const rel0 = decayResult.rel;
     const decayed = decayResult.decayed;
-    let rel: RelationshipState = rel0;
+    let rel: RelationshipState = decayResult.rel;
 
     if (!message.channel) return null;
     const isDM = message.channel.isDMBased();
     const key = sessionKey(isDM ? null : message.guildId, message.channelId);
-    const [session, summary, collected] = await Promise.all([
+    const [session, summary, { images, failed: imagesFailed }] = await Promise.all([
         getSession(key),
         getSessionSummary(key).catch(() => null),
-        message.attachments.size
-            ? collectImages(message)
-            : Promise.resolve({ images: [], failed: 0 }),
+        collectImages(message),
     ]);
-    const images = collected.images;
-    const imagesFailed = collected.failed;
 
     // sinceAt = last status change (any status). A recent change shows subtly for ~24h.
     const statusJustChanged =
@@ -328,17 +294,15 @@ async function handleProcess(
 
     // Live tail only: the head is covered by the rolling summary in the system
     // prompt, so sending it again doubles tokens for zero recall gain.
-    const MODEL_ROW_CAP = 500;
     const messages: AiMessage[] = [];
     for (const m of session.slice(-SESSION_MODEL_WINDOW)) {
         const safeContent = (m.content ?? '').trim().slice(0, MODEL_ROW_CAP);
         if (!safeContent) continue;
         const safeName = (m.username ?? 'user').trim() || 'user';
-        messages.push(
-            m.role === 'assistant'
-                ? { role: 'assistant', content: `${safeName}: ${safeContent}` }
-                : { role: 'user', content: `${safeName}: ${safeContent}` },
-        );
+        messages.push({
+            role: m.role === 'assistant' ? 'assistant' : 'user',
+            content: `${safeName}: ${safeContent}`,
+        });
     }
     // Only genuinely failed downloads get the failure cue — skipped files
     // (oversize, non-image, beyond the 2-image cap) stay silent.
@@ -363,11 +327,10 @@ async function handleProcess(
     let reply: string;
     let turn: AliceTurn;
     let degraded: boolean;
-    let generationError: unknown = undefined;
-    let toolsUsed: string[] = [];
+    let generationError: unknown;
     try {
         stopThinking = opts.onThinking?.();
-        ({ reply, turn, degraded, toolsUsed, error: generationError } = await generate(
+        ({ reply, turn, degraded, error: generationError } = await generate(
             system,
             messages,
             executor,
@@ -381,7 +344,7 @@ async function handleProcess(
     if (degraded) {
         // Failures still consume quota — otherwise retries are free and infinite.
         if (!isByok) {
-            await persistDegradedUsage(userId, rel, state, usage.vote);
+            await persistDegradedUsage(userId, rel, state, usage.vote, usage.usedToday);
         }
 
         if (generationError instanceof SafetyBlockedError) {
@@ -397,17 +360,13 @@ async function handleProcess(
             return {
                 content: applyEmojis(blockedLine()),
                 emotion: 'sad',
-                degraded,
-                toolsUsed,
             };
         }
 
         return {
             content: '',
             emotion: turn.emotion,
-            degraded,
-            toolsUsed,
-            embed: errorEmbed(message.client, describeError(generationError)),
+            embed: errorEmbed(message.client, isByok),
         };
     }
 
@@ -444,47 +403,38 @@ async function handleProcess(
     // Store history sanitized (invented tags stripped, known [tags] kept raw)
     // so junk markup never pollutes future recall. Delivery stays rendered.
     const historyReply = sanitizeForHistory(reply);
-    const writes: Promise<unknown>[] = [
-        relationshipChanged
-            ? Users.saveInteraction(userId, user, rel, memoriesChanged ? memories : undefined)
-            : Users.bumpMessages(userId, user, memoriesChanged ? memories : undefined),
-        persistTurn(
-            key,
-            [
-                { role: 'user', authorId: userId, username: author.username, content, ts: now },
-                {
-                    role: 'assistant',
-                    authorId: botUser?.id ?? 'alice',
-                    username: botUser?.username ?? 'Alice',
-                    content: historyReply,
-                    ts: Date.now(),
-                },
-            ],
-            userId,
-            {
-                rel,
-                usage: isByok
-                    ? state.usage
-                    : { day: usageToday(), count: usage.usedToday + 1 },
-                vote: usage.vote,
-            },
-        ),
-    ];
-    await Promise.all(writes);
-    // Roll the summary forward in the background — never blocks the reply.
-    // Pass the already-fetched summary (no second Redis GET) and mirror what was
-    // just persisted (user + assistant turn) so the watermark matches the trimmed list.
-    const grown: SessionMessage[] = [
-        ...session,
-        { role: 'user' as const, authorId: userId, username: author.username, content, ts: now },
+    const newTurns: SessionMessage[] = [
+        { role: 'user', authorId: userId, username: author.username, content, ts: now },
         {
-            role: 'assistant' as const,
+            role: 'assistant',
             authorId: botUser?.id ?? 'alice',
             username: botUser?.username ?? 'Alice',
             content: historyReply,
-            ts: Date.now(),
+            ts: now,
         },
-    ].slice(-SESSION_MAX_MESSAGES);
-    void maybeSummarize(key, grown, summary, byokKey);
-    return { content: applyEmojis(reply), emotion: turn.emotion, degraded, toolsUsed };
+    ];
+    await Promise.all([
+        Users.recordMessage(
+            userId,
+            user,
+            memoriesChanged ? memories : undefined,
+            relationshipChanged ? rel : undefined,
+        ),
+        persistTurn(key, newTurns, userId, {
+            rel,
+            usage: isByok
+                ? state.usage
+                : { day: usageToday(), count: usage.usedToday + 1 },
+            vote: usage.vote,
+        }),
+    ]);
+    // Roll the summary forward in the background — never blocks the reply.
+    // Pass the already-fetched summary so the watermark matches the trimmed list.
+    void maybeSummarize(
+        key,
+        [...session, ...newTurns].slice(-SESSION_MAX_MESSAGES),
+        summary,
+        byokKey,
+    );
+    return { content: applyEmojis(reply), emotion: turn.emotion };
 }

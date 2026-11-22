@@ -4,7 +4,6 @@ import type { CustomClient } from '../bot/client.js';
 import { Guilds, Users } from '../db/database.js';
 import { processMessage } from '../ai/processor.js';
 import { cooldownLine } from '../ai/voiceLines.js';
-import { splitBubbles } from '../utils/bubbles.js';
 import { createTosEmbed } from '../utils/tos.js';
 import type { Event } from '../types/index.js';
 
@@ -37,7 +36,7 @@ function drainPending(key: string): Message[] {
 function mergeQueued(queued: Message[]): { message: Message; channel: Message['channel'] } | null {
     const last = queued[queued.length - 1]!;
     const combined = queued
-        .map((m) => (m.content ?? '').trim())
+        .map((m) => m.content.trim())
         .filter(Boolean)
         .join('\n')
         .slice(0, 2000);
@@ -83,7 +82,7 @@ function isBenignSendError(err: unknown): boolean {
     return code !== undefined && BENIGN_SEND_ERROR_CODES.has(code);
 }
 
-async function safeReply(message: Message, content: string): Promise<void> {
+async function safeReply(message: Message, content: string | MessageReplyOptions): Promise<void> {
     try {
         await message.reply(content);
     } catch (err) {
@@ -91,16 +90,8 @@ async function safeReply(message: Message, content: string): Promise<void> {
     }
 }
 
-async function safeReplyPayload(message: Message, payload: MessageReplyOptions): Promise<void> {
-    try {
-        await message.reply(payload);
-    } catch (err) {
-        if (!isBenignSendError(err)) throw err;
-    }
-}
-
 function startTyping(channel: Message['channel']): () => void {
-    if (!channel || !('sendTyping' in channel)) return () => {};
+    if (!('sendTyping' in channel)) return () => {};
 
     let stopped = false;
     const send = () => {
@@ -182,7 +173,7 @@ export default {
                         isDM || !message.guildId
                             ? null
                             : await Guilds.getChannel(message.guildId, personaChannelId).catch(() => persona);
-                    await handleTurn(merged.message, client, merged.channel ?? channel, freshPersona, false);
+                    await handleTurn(merged.message, client, merged.channel, freshPersona, false);
                 } catch {
                     // Never drop user messages: re-queue leftovers for the next turn.
                     const leftover = drainPending(key);
@@ -238,7 +229,7 @@ async function handleTurn(
 
         // Embed replies (error / quota walls) skip the human-typing illusion.
         if (response.embed?.data) {
-            await safeReplyPayload(message, {
+            await safeReply(message, {
                 embeds: [response.embed],
                 // exactOptionalPropertyTypes: only set components when present.
                 ...(response.components ? { components: response.components } : {}),
@@ -249,24 +240,7 @@ async function handleTurn(
 
         // Tiny human jitter — stays snappy (300-900ms), just enough to feel typed.
         await sleep(300 + Math.random() * 600);
-
-        const parts = splitBubbles(response.content).slice(0, 2);
-        await safeReply(message, parts[0]!);
-        for (const part of parts.slice(1)) {
-            await sleep(700 + Math.random() * 500);
-            try {
-                const sendable = channel as unknown as {
-                    isSendable?: () => boolean;
-                    send?: (content: string) => Promise<unknown>;
-                };
-                if (typeof sendable.isSendable === 'function' && !sendable.isSendable()) break;
-                if (typeof sendable.send !== 'function') break;
-                await sendable.send(part);
-            } catch (err) {
-                if (!isBenignSendError(err)) throw err;
-                break;
-            }
-        }
+        await safeReply(message, response.content);
     } catch (err) {
         if (!isBenignSendError(err)) console.error('Message processing error:', err);
     }

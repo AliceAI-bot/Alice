@@ -40,9 +40,8 @@ export async function executeProfile(ctx: ToolContext, args: Record<string, unkn
         // include them when looking up the requester themselves.
         let loops: string[] = [];
         if (targetId === ctx.requesterId) {
-            const ch = ctx.message.channel;
-            const isDM = typeof ch?.isDMBased === 'function' && ch.isDMBased();
-            const key = sessionKey(isDM ? null : (ctx.message.guildId ?? null), ctx.message.channelId);
+            const isDM = ctx.message.channel?.isDMBased() ?? false;
+            const key = sessionKey(isDM ? null : ctx.message.guildId, ctx.message.channelId);
             const summary = await getSessionSummary(key).catch(() => null);
             loops = (summary?.openLoops ?? []).slice(0, 3);
         }

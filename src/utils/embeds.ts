@@ -49,6 +49,12 @@ function linkButton(label: string, url: string, emoji: string): ButtonBuilder {
     return new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel(label).setURL(url).setEmoji(emoji);
 }
 
+export function voteRow(botId: string): ActionRowBuilder<ButtonBuilder> {
+    return new ActionRowBuilder<ButtonBuilder>().addComponents(
+        linkButton('⭐ Vote on Top.gg', `https://top.gg/bot/${botId}/vote`, '⭐'),
+    );
+}
+
 /** Bot-initiated embeds brand themselves with the bot avatar (not a requester footer). */
 function selfBranded(client: Client | null, color: number, title: string, description: string): EmbedBuilder {
     const embed = new EmbedBuilder()
@@ -62,15 +68,17 @@ function selfBranded(client: Client | null, color: number, title: string, descri
     return embed;
 }
 
-/** Service failure surfaced to the user, with the real reason in Details. */
-export function errorEmbed(client: Client | null, reason: string): EmbedBuilder {
-    const details = (reason || 'Unknown error').replace(/`/g, "'").slice(0, 300);
+/** Service failure surfaced to the user — raw provider errors never leave logs. */
+export function errorEmbed(client: Client | null, byok = false): EmbedBuilder {
+    const tip = byok
+        ? 'Your API key may be rate limited — try again shortly.'
+        : 'Use `/byok` to add your own Gemini API key and skip the shared queue.';
     return selfBranded(
         client,
         EMBED_COLORS.error,
         '⚠️ Response Unavailable',
-        "I wasn't able to complete that response. Please try again in a moment — if it keeps happening, the service may be temporarily unreachable.",
-    ).addFields({ name: 'Details', value: `\`${details}\`` });
+        `I'm having trouble processing your message right now. Please try again in a moment.\n\n💡 **Tip:** ${tip}`,
+    );
 }
 
 /** Daily quota wall — still nudges voting for the bonus. */
@@ -85,16 +93,8 @@ export function quotaEmbed(
         '🌙 Daily Limit Reached',
         `\`\`\`md\n# Daily Limit Reached\n> Messages used today: ${quota}\n> Vote for Alice to receive +${bonus} bonus messages\n\`\`\`\nVotes unlock extra messages — your limit resets tomorrow.`,
     );
-    const components: ActionRowBuilder<ButtonBuilder>[] = [];
     const botId = client?.user?.id;
-    if (botId) {
-        components.push(
-            new ActionRowBuilder<ButtonBuilder>().addComponents(
-                linkButton('⭐ Vote on Top.gg', `https://top.gg/bot/${botId}/vote`, '⭐'),
-            ),
-        );
-    }
-    return { embed, components };
+    return { embed, components: botId ? [voteRow(botId)] : [] };
 }
 
 // NOTE: the support/appeal invites used by the blacklist flow are different

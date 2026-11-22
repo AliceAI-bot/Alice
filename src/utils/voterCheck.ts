@@ -1,10 +1,10 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
+import { EmbedBuilder } from 'discord.js';
+import type { ActionRowBuilder, ButtonBuilder } from 'discord.js';
 import { Users } from '../db/database.js';
 import { getUserState, saveUserState, VOTE_FRESH_MS, VOTE_NEGATIVE_FRESH_MS } from '../db/redisStore.js';
-import type { UserState } from '../db/redisStore.js';
+import type { UserState, UserVoteState } from '../db/redisStore.js';
 import { loadEnv } from '../config/env.js';
-
-const voteUrl = (botId: string): string => `https://top.gg/bot/${botId}/vote`;
+import { voteRow } from './embeds.js';
 
 let queue: Promise<unknown> = Promise.resolve();
 
@@ -93,21 +93,13 @@ export function refreshVote(userId: string): Promise<boolean | null> {
     return fresh;
 }
 
-export async function checkVoteCached(
-    userId: string,
-    state: UserState,
-    forceRefresh = false,
-): Promise<boolean> {
-    if (!forceRefresh && state.vote) {
-        const age = Date.now() - state.vote.checkedAt;
-        // Positive votes stay cached for VOTE_FRESH_MS; negative results only
-        // for VOTE_NEGATIVE_FRESH_MS so a fresh vote is picked up automatically.
-        const ttl = state.vote.voted ? VOTE_FRESH_MS : VOTE_NEGATIVE_FRESH_MS;
-        if (age < ttl) {
-            return state.vote.voted;
-        }
-    }
+/** Shared vote-cache policy: positives stay fresh longer than negatives. */
+export function voteIsFresh(vote: UserVoteState | null, now = Date.now()): boolean {
+    if (!vote) return false;
+    return now - vote.checkedAt < (vote.voted ? VOTE_FRESH_MS : VOTE_NEGATIVE_FRESH_MS);
+}
 
+export async function checkVote(userId: string, state: UserState): Promise<boolean> {
     const voted = await refreshVote(userId);
     if (voted === null) return state.vote?.voted ?? false;
 
@@ -119,16 +111,6 @@ export async function checkVoteCached(
     }
 
     return voted;
-}
-
-async function checkVoteForced(userId: string): Promise<boolean> {
-    try {
-        return await checkVoteCached(userId, await getUserState(userId), true);
-    } catch {
-        // State lookup unavailable — settle with a direct vote query.
-        const voted = await refreshVote(userId);
-        return voted ?? false;
-    }
 }
 
 export interface VotePrompt {
@@ -147,7 +129,13 @@ export async function isVoter(
 
     // Vote gates are low-frequency: always revalidate live so a fresh vote
     // unlocks instantly instead of staying blocked on a stale negative cache.
-    const hasVoted = await checkVoteForced(userId);
+    let hasVoted: boolean;
+    try {
+        hasVoted = await checkVote(userId, await getUserState(userId));
+    } catch {
+        // State lookup unavailable — settle with a direct vote query.
+        hasVoted = (await refreshVote(userId)) ?? false;
+    }
     if (hasVoted) return null;
 
     const embed = new EmbedBuilder()
@@ -168,18 +156,5 @@ export async function isVoter(
             iconURL: 'https://top.gg/favicon.ico',
         });
 
-    const components: ActionRowBuilder<ButtonBuilder>[] = [];
-    if (botId) {
-        components.push(
-            new ActionRowBuilder<ButtonBuilder>().addComponents(
-                new ButtonBuilder()
-                    .setLabel('Vote on Top.gg')
-                    .setStyle(ButtonStyle.Link)
-                    .setURL(voteUrl(botId))
-                    .setEmoji('⭐'),
-            ),
-        );
-    }
-
-    return { embeds: [embed], components };
+    return { embeds: [embed], components: botId ? [voteRow(botId)] : [] };
 }

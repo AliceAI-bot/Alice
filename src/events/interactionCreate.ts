@@ -1,11 +1,11 @@
-import { Events, Interaction, ChatInputCommandInteraction, ButtonInteraction } from 'discord.js';
+import { Events, Interaction, type RepliableInteraction } from 'discord.js';
 import { CustomClient } from '../bot/client.js';
 import { createTosEmbed, handleTosButton } from '../utils/tos.js';
 import { Users } from '../db/database.js';
 import { buildBlacklistResponse } from '../utils/blacklistUtil.js';
 import { handleFlagButton, handleFlagBlacklistModal, FLAG_BLACKLIST_MODAL_PREFIX, FLAG_BLACKLIST_PREFIX, FLAG_CLOSE_PREFIX } from '../utils/flagReport.js';
 import { handleByokButton, handleByokModal } from '../commands/byok.js';
-import type { Event, Command } from '../types/index.js';
+import type { Event } from '../types/index.js';
 
 export default {
     name: Events.InteractionCreate,
@@ -13,7 +13,7 @@ export default {
         if (interaction.isButton()) {
             // The ToS buttons ARE the acceptance flow — everything else is gated.
             if (interaction.customId === 'accept_tos' || interaction.customId === 'cancel_tos') {
-                await handleTosButton(interaction as ButtonInteraction);
+                await handleTosButton(interaction);
                 return;
             }
             // Mod/act buttons on flag reports — routed before the tos/blacklist
@@ -22,12 +22,12 @@ export default {
                 interaction.customId.startsWith(FLAG_BLACKLIST_PREFIX) ||
                 interaction.customId.startsWith(FLAG_CLOSE_PREFIX)
             ) {
-                await handleFlagButton(interaction as ButtonInteraction);
+                await handleFlagButton(interaction);
                 return;
             }
             if (await isBlocked(interaction)) return;
             if (interaction.customId.startsWith('byok_add') || interaction.customId.startsWith('byok_remove')) {
-                await handleByokButton(interaction as ButtonInteraction);
+                await handleByokButton(interaction);
                 return;
             }
             return;
@@ -46,7 +46,7 @@ export default {
             return;
         }
         if (interaction.isAutocomplete()) {
-            const command = client.slashCommands.get(interaction.commandName) as Command | undefined;
+            const command = client.slashCommands.get(interaction.commandName);
             if (!command?.autocomplete) return;
 
             try {
@@ -59,7 +59,7 @@ export default {
 
         if (!interaction.isChatInputCommand()) return;
 
-        const command = client.slashCommands.get(interaction.commandName) as Command | undefined;
+        const command = client.slashCommands.get(interaction.commandName);
         if (!command) return;
 
         if (await isBlocked(interaction)) return;
@@ -79,7 +79,7 @@ export default {
         }
 
         try {
-            await command.execute(interaction as ChatInputCommandInteraction);
+            await command.execute(interaction);
             client.cooldowns.set(cooldownKey, now + cooldownDuration);
         } catch (error) {
             console.error(`Command error (${interaction.commandName}):`, error);
@@ -105,11 +105,7 @@ export default {
  * Shared ToS + blacklist wall for every interaction type. Returns true when
  * blocked (already replied). One cached read covers acceptance + status.
  */
-async function isBlocked(
-    interaction: Pick<Interaction, 'user' | 'client'> & {
-        reply: (options: Record<string, unknown>) => Promise<unknown>;
-    },
-): Promise<boolean> {
+async function isBlocked(interaction: RepliableInteraction): Promise<boolean> {
     const gate = await Users.getGateData(interaction.user.id);
 
     if (!gate.accepted) {

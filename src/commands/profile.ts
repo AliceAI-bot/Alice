@@ -1,7 +1,7 @@
 import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
 import { Users } from '../db/database.js';
 import { getUserState, usageToday } from '../db/redisStore.js';
-import { checkVoteCached } from '../utils/voterCheck.js';
+import { checkVote } from '../utils/voterCheck.js';
 import { RELATIONSHIP_CONFIG } from '../config/relationshipConfig.js';
 import { roundAffection } from '../utils/relationship.js';
 import { getBadge } from '../config/config.js';
@@ -60,7 +60,7 @@ export default {
                 memberTask,
             ]);
 
-            const hasVoted = await checkVoteCached(targetUser.id, state, true);
+            const hasVoted = await checkVote(targetUser.id, state);
             const currentUsage = state.usage.day === usageToday() ? state.usage.count : 0;
 
             const premiumActive =

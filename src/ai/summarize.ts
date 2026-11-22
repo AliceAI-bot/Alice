@@ -8,13 +8,6 @@ import {
 } from '../db/redisStore.js';
 import type { SessionMessage, SessionSummary } from '../db/redisStore.js';
 
-/**
- * Rolling append-only summary (fire-and-forget, never blocks replies).
- * Desired behavior: shared channel holds max 30 msgs. When it hits 30, we
- * summarize ONLY the old head (oldest len-14), delete those texts from Redis
- * (keep live tail 14), and APPEND the new chunk to the existing summary.
- * The prior summary is never re-summarized — it is preserved verbatim.
- */
 const SUMMARY_TRIGGER_LEN = SESSION_MAX_MESSAGES;
 const SUMMARY_MAX_TEXT = 1200;
 
@@ -58,17 +51,11 @@ export async function maybeSummarize(
 ): Promise<void> {
     try {
         if (fullSession.length < SUMMARY_TRIGGER_LEN) return;
-        // Old head only — never the prior summary. Tail stays live in Redis.
         const head = fullSession.slice(0, fullSession.length - SESSION_MODEL_WINDOW);
-        if (head.length < 8) return;
-        // Skip anything already covered (crash/race safety) — watermark only moves forward.
         const coveredUpTo = existing?.coveredUpTo ?? 0;
         const fresh = head.filter((m) => m.ts > coveredUpTo);
         if (fresh.length < 8) {
-            // Still trim already-covered head so the list can't stick at 30 forever.
-            if (head.length >= fullSession.length - SESSION_MODEL_WINDOW) {
-                await trimSessionToTail(key, SESSION_MODEL_WINDOW);
-            }
+            await trimSessionToTail(key, SESSION_MODEL_WINDOW);
             return;
         }
 
@@ -92,7 +79,6 @@ export async function maybeSummarize(
         ]
             .filter(Boolean)
             .join('\n');
-        // Append-only: preserve prior summary verbatim, add new chunk, cap tail.
         const base = existing?.text?.trim() ?? '';
         const appended = base ? `${base}\n---\n${chunk}` : chunk;
         const capped =

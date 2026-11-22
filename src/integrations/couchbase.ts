@@ -1,4 +1,4 @@
-import { connect, Collection } from 'couchbase';
+import { connect, Collection, Bucket } from 'couchbase';
 import { loadEnv } from '../config/env.js';
 
 interface Collections {
@@ -6,12 +6,16 @@ interface Collections {
     guilds: Collection;
 }
 
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 class CouchbaseClient {
     private static collections: Collections | null = null;
     private static readonly COLLECTIONS: (keyof Collections)[] = ['users', 'guilds'];
 
     static async init(): Promise<Collections> {
-        if (this.collections) return this.collections!;
+        if (this.collections) return this.collections;
 
         const cluster = await connect(loadEnv('couchbase'), {
             username: loadEnv('couchbase_user'),
@@ -24,23 +28,23 @@ class CouchbaseClient {
         const scope = bucket.scope('_default');
 
         await this.ensureCollections(bucket);
-        await new Promise(r => setTimeout(r, 1500));
+        await sleep(1500);
 
         this.collections = {
             users: scope.collection('users'),
             guilds: scope.collection('guilds'),
         };
 
-        return this.collections!;
+        return this.collections;
     }
 
-    private static async ensureCollections(bucket: any): Promise<void> {
+    private static async ensureCollections(bucket: Bucket): Promise<void> {
         const mgr = bucket.collections();
         let existing: string[] = [];
 
         try {
             const scopes = await mgr.getAllScopes();
-            existing = scopes.find((s: any) => s.name === '_default')?.collections.map((c: any) => c.name) ?? [];
+            existing = scopes.find((s) => s.name === '_default')?.collections.map((c) => c.name) ?? [];
         } catch {
             // Scope might not exist yet, collections will fail individually
         }
@@ -50,11 +54,12 @@ class CouchbaseClient {
 
             try {
                 await mgr.createCollection({ name, scopeName: '_default' });
-                await new Promise(r => setTimeout(r, 800));
-            } catch (err: any) {
+                await sleep(800);
+            } catch (err) {
                 // Already exists (race) or no permission — non-fatal
-                if (!err.message?.includes('already exists')) {
-                    console.warn(`[couchbase] Collection '${name}' creation failed:`, err.message);
+                const message = err instanceof Error ? err.message : String(err);
+                if (!message.includes('already exists')) {
+                    console.warn(`[couchbase] Collection '${name}' creation failed:`, message);
                 }
             }
         }

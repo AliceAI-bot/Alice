@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ChatInputCommandInteraction, TextChannel } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ChatInputCommandInteraction, TextChannel, type Client } from 'discord.js';
 import { Users } from '../db/database.js';
 import { isOwner, isModerator, getLogChannel, getBadge } from '../config/config.js';
 import { baseEmbed } from '../utils/embeds.js';
@@ -88,8 +88,9 @@ export default {
                 default:
                     await interaction.editReply({ embeds: [embed(interaction, '❌ Invalid Mode', 'Invalid mode specified.', 0xff0000)] });
             }
-        } catch (err: any) {
-            await interaction.editReply({ embeds: [embed(interaction, '❌ Error', `An error occurred: \`${err.message}\``, 0xff0000)] });
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            await interaction.editReply({ embeds: [embed(interaction, '❌ Error', `An error occurred: \`${message}\``, 0xff0000)] });
         }
     },
 } as Command;
@@ -103,19 +104,38 @@ const styledEmbed = (title: string, description: string, color: number, footer?:
     return footer ? styled.setFooter({ text: footer }) : styled;
 };
 
-const fetchTag = (client: any, id: string) =>
-    client.users.fetch(id).then((u: any) => u.tag).catch(() => 'Unknown User');
-
-async function handleBlacklist(interaction: ChatInputCommandInteraction, action: string, userId: string) {
-    switch (action) {
-        case 'add': return await blAdd(interaction, userId);
-        case 'remove': return await blRemove(interaction, userId);
-        case 'check': return await blCheck(interaction, userId);
-        default: return interaction.editReply({ embeds: [embed(interaction, '❌ Invalid Action', 'Invalid action specified.', 0xff0000)] });
+async function fetchTag(client: Client, id: string): Promise<string> {
+    try {
+        return (await client.users.fetch(id)).tag;
+    } catch {
+        return 'Unknown User';
     }
 }
 
-async function blAdd(interaction: ChatInputCommandInteraction, userId: string) {
+type ActionHandler = () => Promise<unknown>;
+
+async function dispatchAction(
+    interaction: ChatInputCommandInteraction,
+    action: string,
+    handlers: Record<string, ActionHandler>,
+): Promise<void> {
+    const handler = handlers[action];
+    if (handler) {
+        await handler();
+        return;
+    }
+    await interaction.editReply({ embeds: [embed(interaction, '❌ Invalid Action', 'Invalid action specified.', 0xff0000)] });
+}
+
+async function handleBlacklist(interaction: ChatInputCommandInteraction, action: string, userId: string): Promise<void> {
+    await dispatchAction(interaction, action, {
+        add: () => blAdd(interaction, userId),
+        remove: () => blRemove(interaction, userId),
+        check: () => blCheck(interaction, userId),
+    });
+}
+
+async function blAdd(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
     const reason = interaction.options.getString('reason') || 'No reason provided.';
 
     const outcome = await blacklistUser({
@@ -136,8 +156,9 @@ async function blAdd(interaction: ChatInputCommandInteraction, userId: string) {
     await interaction.editReply({ embeds: [embed(interaction, '✅ Blacklisted', `# <@${userId}> has been blacklisted.\n> Reason: ${reason}`, 0x00ff00)] });
 }
 
-async function blRemove(interaction: ChatInputCommandInteraction, userId: string) {
-    if (!(await Users.isBlacklisted(userId))) {
+async function blRemove(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
+    const gate = await Users.getGateData(userId);
+    if (!gate.blacklisted) {
         await interaction.editReply({ embeds: [embed(interaction, '⚠️ Not Blacklisted', `# <@${userId}> is not blacklisted.`, 0xffa500)] });
         return;
     }
@@ -145,7 +166,7 @@ async function blRemove(interaction: ChatInputCommandInteraction, userId: string
     await interaction.editReply({ embeds: [embed(interaction, '✅ Unblacklisted', `# <@${userId}> has been removed from the blacklist.`, 0x00ff00)] });
 }
 
-async function blCheck(interaction: ChatInputCommandInteraction, userId: string) {
+async function blCheck(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
     const gate = await Users.getGateData(userId);
     await interaction.editReply({
         embeds: [
@@ -156,16 +177,15 @@ async function blCheck(interaction: ChatInputCommandInteraction, userId: string)
     });
 }
 
-async function handlePremium(interaction: ChatInputCommandInteraction, action: string, userId: string) {
-    switch (action) {
-        case 'add': return await prAdd(interaction, userId);
-        case 'remove': return await prRemove(interaction, userId);
-        case 'check': return await prCheck(interaction, userId);
-        default: return interaction.editReply({ embeds: [embed(interaction, '❌ Invalid Action', 'Invalid action specified.', 0xff0000)] });
-    }
+async function handlePremium(interaction: ChatInputCommandInteraction, action: string, userId: string): Promise<void> {
+    await dispatchAction(interaction, action, {
+        add: () => prAdd(interaction, userId),
+        remove: () => prRemove(interaction, userId),
+        check: () => prCheck(interaction, userId),
+    });
 }
 
-async function prAdd(interaction: ChatInputCommandInteraction, userId: string) {
+async function prAdd(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
     const expiryStr = interaction.options.getString('expiry');
 
     if (!expiryStr) {
@@ -174,7 +194,7 @@ async function prAdd(interaction: ChatInputCommandInteraction, userId: string) {
     }
 
     const expiry = new Date(expiryStr);
-    if (isNaN(expiry.getTime())) {
+    if (Number.isNaN(expiry.getTime())) {
         await interaction.editReply({ embeds: [embed(interaction, '❓ Invalid Expiry', '# Expiry must be a valid date (YYYY-MM-DD).', 0xffa500)] });
         return;
     }
@@ -210,7 +230,7 @@ async function prAdd(interaction: ChatInputCommandInteraction, userId: string) {
     await interaction.editReply({ embeds: [embed(interaction, '✅ Premium Added', `# <@${userId}> now has premium!\n> Expires: ${expiryStr}`, 0x00ff00)] });
 }
 
-async function prRemove(interaction: ChatInputCommandInteraction, userId: string) {
+async function prRemove(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
     const user = await Users.get(userId);
     if (!user || user.tier !== 'premium') {
         await interaction.editReply({ embeds: [embed(interaction, '⚠️ Not Premium', `# <@${userId}> does not have premium.`, 0xffa500)] });
@@ -220,7 +240,7 @@ async function prRemove(interaction: ChatInputCommandInteraction, userId: string
     await interaction.editReply({ embeds: [embed(interaction, '✅ Premium Removed', `# <@${userId}> has lost premium status.`, 0xffb6c1)] });
 }
 
-async function prCheck(interaction: ChatInputCommandInteraction, userId: string) {
+async function prCheck(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
     const user = await Users.get(userId);
     const isPremium = user?.tier === 'premium' && (!user.premiumExpiry || user.premiumExpiry > Date.now());
     const expiry = user?.premiumExpiry ? new Date(user.premiumExpiry).toISOString().split('T')[0] : 'N/A';
@@ -230,7 +250,7 @@ async function prCheck(interaction: ChatInputCommandInteraction, userId: string)
     });
 }
 
-async function handleBadge(interaction: ChatInputCommandInteraction, action: string, userId: string) {
+async function handleBadge(interaction: ChatInputCommandInteraction, action: string, userId: string): Promise<void> {
     const badgeName = interaction.options.getString('badge');
 
     if (!badgeName) {
@@ -244,15 +264,14 @@ async function handleBadge(interaction: ChatInputCommandInteraction, action: str
         return;
     }
 
-    switch (action) {
-        case 'add': return await bgAdd(interaction, userId, badgeName, badgeDisplay);
-        case 'remove': return await bgRemove(interaction, userId, badgeName, badgeDisplay);
-        case 'check': return await bgCheck(interaction, userId);
-        default: return interaction.editReply({ embeds: [embed(interaction, '❌ Invalid Action', 'Invalid action specified.', 0xff0000)] });
-    }
+    await dispatchAction(interaction, action, {
+        add: () => bgAdd(interaction, userId, badgeName, badgeDisplay),
+        remove: () => bgRemove(interaction, userId, badgeName, badgeDisplay),
+        check: () => bgCheck(interaction, userId),
+    });
 }
 
-async function bgAdd(interaction: ChatInputCommandInteraction, userId: string, badgeName: string, badgeDisplay: string) {
+async function bgAdd(interaction: ChatInputCommandInteraction, userId: string, badgeName: string, badgeDisplay: string): Promise<void> {
     await Users.addBadge(userId, badgeName);
     await interaction.editReply({
         embeds: [
@@ -266,7 +285,7 @@ async function bgAdd(interaction: ChatInputCommandInteraction, userId: string, b
     });
 }
 
-async function bgRemove(interaction: ChatInputCommandInteraction, userId: string, badgeName: string, badgeDisplay: string) {
+async function bgRemove(interaction: ChatInputCommandInteraction, userId: string, badgeName: string, badgeDisplay: string): Promise<void> {
     const user = await Users.get(userId);
     if (!user?.badges.includes(badgeName)) {
         await interaction.editReply({ embeds: [embed(interaction, '❓ No Badge', `# <@${userId}> does not have the \`${badgeName}\` badge.`, 0xffa500)] });
@@ -285,7 +304,7 @@ async function bgRemove(interaction: ChatInputCommandInteraction, userId: string
     });
 }
 
-async function bgCheck(interaction: ChatInputCommandInteraction, userId: string) {
+async function bgCheck(interaction: ChatInputCommandInteraction, userId: string): Promise<void> {
     const user = await Users.get(userId);
     const badges = user?.badges ?? [];
 

@@ -107,7 +107,7 @@ export function applyMonthlyDecay(
 }
 
 const STATUS_CONTEXT: Record<RelationshipStatus, string> = {
-    stranger: "Still new with {user}: friendly but not familiar yet, no pet names.",
+    stranger: 'Still new with {user}: friendly but not familiar yet, no pet names.',
     friend: 'Friends with {user}: relaxed, light tease, actually curious.',
     close_friend: 'Close with {user}: honest, roast a little, check in for real.',
     bestie: 'Besties with {user}: playful, notice mood fast, start stuff.',
@@ -126,7 +126,7 @@ export function affectionBand(affection: number): string {
 }
 
 export function buildRelationshipContext(status: RelationshipStatus): string {
-    return STATUS_CONTEXT[status] ?? STATUS_CONTEXT.stranger!;
+    return STATUS_CONTEXT[status];
 }
 
 export function formatTimeGap(ms: number | null | undefined): string {
@@ -147,39 +147,34 @@ export function formatTimeGap(ms: number | null | undefined): string {
     return months <= 1 ? 'a month ago' : `${months}mo ago`;
 }
 
-let hourFmt: Intl.DateTimeFormat | null = null;
-let fullFmt: Intl.DateTimeFormat | null = null;
+const HOUR_FMT = new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    hour12: false,
+    timeZone: 'Asia/Tokyo',
+});
 
-function getHourFmt(): Intl.DateTimeFormat {
-    if (!hourFmt) {
-        hourFmt = new Intl.DateTimeFormat('en-US', {
-            hour: 'numeric',
-            hour12: false,
-            timeZone: 'Asia/Tokyo',
-        });
+const FULL_FMT = new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'Asia/Tokyo',
+});
+
+/** 0-23 in Tokyo; falls back to the host hour if Intl is unavailable. */
+export function tokyoHour(date = new Date()): number {
+    try {
+        const hour = Number.parseInt(HOUR_FMT.format(date), 10);
+        return Number.isNaN(hour) ? date.getHours() : hour % 24;
+    } catch {
+        return date.getHours();
     }
-    return hourFmt;
 }
 
-function getFullFmt(): Intl.DateTimeFormat {
-    if (!fullFmt) {
-        fullFmt = new Intl.DateTimeFormat('en-US', {
-            weekday: 'short',
-            month: 'short',
-            day: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true,
-            timeZone: 'Asia/Tokyo',
-        });
-    }
-    return fullFmt;
-}
-
-export function daypartTokyo(date = new Date()): string {
-    const hourStr = getHourFmt().format(date);
-    const hour = Number.parseInt(hourStr, 10);
-    if (Number.isNaN(hour)) return 'daytime';
+function daypartTokyo(date = new Date()): string {
+    const hour = tokyoHour(date);
     if (hour >= 5 && hour < 11) return 'morning';
     if (hour >= 11 && hour < 17) return 'afternoon';
     if (hour >= 17 && hour < 22) return 'evening';
@@ -189,7 +184,7 @@ export function daypartTokyo(date = new Date()): string {
 
 export function formatTokyoNow(date = new Date()): string {
     try {
-        return `${getFullFmt().format(date)} JST (${daypartTokyo(date)})`;
+        return `${FULL_FMT.format(date)} JST (${daypartTokyo(date)})`;
     } catch {
         return date.toISOString();
     }

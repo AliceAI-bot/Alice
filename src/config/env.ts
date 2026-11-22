@@ -1,6 +1,6 @@
-import dotenv from "dotenv";
+import dotenv from 'dotenv';
 dotenv.config();
 
 export function loadEnv(query: string): string {
-  return process.env[query] ?? '';
+    return process.env[query] ?? '';
 }

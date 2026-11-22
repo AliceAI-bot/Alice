@@ -1,11 +1,9 @@
-import { Api } from "@top-gg/sdk";
+import { Api } from '@top-gg/sdk';
 
 let apiInstance: Api | null = null;
 
-export const initTopGG = (token: string): Api => {
-    if (!token) {
-        throw new Error("Top.gg token is required");
-    }
+export function initTopGG(token: string): void {
+    if (!token) throw new Error('Top.gg token is required');
 
     // The SDK posts stats via the v0 API, which expects the raw token
     // (no `Bearer ` prefix). The .env value may carry the prefix for v1
@@ -13,26 +11,16 @@ export const initTopGG = (token: string): Api => {
     const rawToken = token.startsWith('Bearer ') ? token.slice('Bearer '.length) : token;
 
     apiInstance = new Api(rawToken);
-    console.log("Top.gg API initialized");
-    return apiInstance;
-};
+    console.log('Top.gg API initialized');
+}
 
-export const poststats = async (serverCount: number, shardCount?: number): Promise<void> => {
+export async function poststats(serverCount: number, shardCount?: number): Promise<void> {
     if (!apiInstance) {
-        throw new Error("Top.gg API not initialized. Call initTopGG(token) first.");
+        throw new Error('Top.gg API not initialized. Call initTopGG(token) first.');
     }
 
-    if (typeof serverCount !== 'number' || serverCount < 0) {
-        throw new Error("Invalid serverCount provided");
-    }
+    const stats: { serverCount: number; shardCount?: number } = { serverCount };
+    if (shardCount) stats.shardCount = shardCount;
 
-    try {
-        const stats: { serverCount: number; shardCount?: number } = { serverCount };
-        if (shardCount) stats.shardCount = shardCount;
-
-        await apiInstance.postStats(stats);
-    } catch (error) {
-        console.error("Failed to post bot stats to Top.gg:", error);
-        throw error;
-    }
-};
+    await apiInstance.postStats(stats);
+}

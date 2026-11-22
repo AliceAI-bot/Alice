@@ -8,8 +8,8 @@ const redisClient = createClient({
     password: loadEnv('redis_pass'),
     socket: {
         host: loadEnv('redis_host'),
-        port: Number(loadEnv('redis_port'))
-    }
+        port: Number(loadEnv('redis_port')),
+    },
 });
 
 redisClient.on('error', (error) => {

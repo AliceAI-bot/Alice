@@ -1,56 +1,40 @@
 import {
-    Collection,
+    ActionRowBuilder,
+    ComponentType,
     EmbedBuilder,
     SlashCommandBuilder,
-    ActionRowBuilder,
     StringSelectMenuBuilder,
     version as discordVersion,
     type ChatInputCommandInteraction,
 } from 'discord.js';
 import { cpus, totalmem, freemem } from 'os';
 import type { Command } from '../types/index.js';
+import type { CustomClient } from '../bot/client.js';
 import { baseEmbed, inviteRow } from '../utils/embeds.js';
-
-/** Shape of a registered slash command, for listing in the Commands section. */
-interface CommandLike {
-    data?: { name?: string; description?: string };
-    global?: boolean;
-}
-
-/** discord-hybrid-sharding surface used by the info section. */
-interface ClusterLike {
-    id: number;
-    shardList: number[];
-    shardCount: number;
-    manager: {
-        totalClusters: number;
-        broadcastEval(
-            fn: (c: any) => { guilds: number; channels: number; users: number },
-        ): Promise<Array<{ guilds: number; channels: number; users: number }>>;
-    } | null;
-}
 
 // AI-related commands get their own section; dev-only (global:false) commands never appear.
 const AI_COMMANDS = new Set(['chat', 'reset_session', 'byok']);
 
-function listedCommands(interaction: ChatInputCommandInteraction): CommandLike[] {
-    const registry = interaction.client as unknown as {
-        slashCommands?: Collection<string, CommandLike>;
-    };
-    return [...(registry.slashCommands?.values() ?? [])]
-        .filter((c) => c?.data?.name && c.global !== false)
-        .toSorted((a, b) => (a.data!.name! < b.data!.name! ? -1 : 1));
+function listedCommands(interaction: ChatInputCommandInteraction): Command[] {
+    const registry = interaction.client as CustomClient;
+    return [...registry.slashCommands.values()]
+        .filter((c) => c.global !== false)
+        .toSorted((a, b) => a.data.name.localeCompare(b.data.name));
+}
+
+function commandDescription(command: Command): string {
+    return 'description' in command.data ? command.data.description : '';
 }
 
 function buildCommandsEmbed(interaction: ChatInputCommandInteraction): EmbedBuilder {
-    const describe = (c: CommandLike) => `\`/${c.data!.name!}\` • ${c.data!.description ?? ''}`.trim();
+    const describe = (c: Command): string => `\`/${c.data.name}\` • ${commandDescription(c)}`;
     const listed = listedCommands(interaction);
-    const section = (matches: (c: CommandLike) => boolean): string =>
+    const section = (matches: (c: Command) => boolean): string =>
         listed.filter(matches).map(describe).join('\n') || '> Nothing here yet';
 
-    return baseEmbed(interaction, '✨ Commands', '```md\n# Available Commands```').addFields(
-        { name: '🎯 Utility', value: section((c) => !AI_COMMANDS.has(c.data!.name!)) },
-        { name: '🤖 AI', value: section((c) => AI_COMMANDS.has(c.data!.name!)) },
+    return baseEmbed(interaction, '✨ Commands', '```md\n# Available Commands\n```').addFields(
+        { name: '🎯 Utility', value: section((c) => !AI_COMMANDS.has(c.data.name)) },
+        { name: '🤖 AI', value: section((c) => AI_COMMANDS.has(c.data.name)) },
     );
 }
 
@@ -69,32 +53,31 @@ async function buildInfoEmbed(interaction: ChatInputCommandInteraction): Promise
     const memoryUsed = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
     const ping = Math.round(interaction.client.ws.ping);
     const nodeVersion = process.version;
+    const client = interaction.client as CustomClient;
 
     // Local totals first; cluster branches override them.
     let clusterInfo = 'Single Process';
     let shardInfo = 'No Sharding';
-    let totalGuilds = interaction.client.guilds.cache.size;
-    let totalUsers = interaction.client.guilds.cache.reduce((acc, guild) => acc + (guild.memberCount || 0), 0);
-    let totalChannels = interaction.client.channels.cache.size;
-    const totalCommands = (interaction.client as unknown as { slashCommands?: { size?: number } }).slashCommands?.size || 0;
+    let totalGuilds = client.guilds.cache.size;
+    let totalUsers = client.guilds.cache.reduce((acc, guild) => acc + (guild.memberCount || 0), 0);
+    let totalChannels = client.channels.cache.size;
+    const totalCommands = client.slashCommands.size;
 
     try {
-        const cluster = (interaction.client as unknown as { cluster?: ClusterLike }).cluster;
-        if (cluster && cluster.manager) {
-            clusterInfo = `Cluster ${cluster.id} / ${cluster.manager.totalClusters}`;
-            shardInfo = `${cluster.shardList.join(', ')} / ${cluster.shardCount}`;
+        const cluster = client.cluster;
+        if (cluster) {
+            const info = cluster.info;
+            clusterInfo = `Cluster ${info.CLUSTER} / ${info.CLUSTER_COUNT}`;
+            shardInfo = `${cluster.shardList.join(', ')} / ${info.TOTAL_SHARDS}`;
             // Single broadcast for all totals instead of three round-trips.
-            const results = await cluster.manager.broadcastEval((c: any) => ({
+            const results = await cluster.broadcastEval((c) => ({
                 guilds: c.guilds.cache.size,
                 channels: c.channels.cache.size,
-                users: c.guilds.cache.reduce((total: number, guild: any) => total + (guild.memberCount || 0), 0),
+                users: c.guilds.cache.reduce((total, guild) => total + (guild.memberCount || 0), 0),
             }));
             totalGuilds = results.reduce((a, b) => a + b.guilds, 0);
             totalChannels = results.reduce((a, b) => a + b.channels, 0);
             totalUsers = results.reduce((a, b) => a + b.users, 0);
-        } else if (cluster) {
-            clusterInfo = `${cluster.id}`;
-            shardInfo = `${cluster.shardList.join(', ')} / ${cluster.shardCount}`;
         }
     } catch (error) {
         console.error('Error fetching stats:', error);
@@ -195,46 +178,34 @@ export default {
             components: [menuRow, buttonRow],
         });
 
-        try {
-            const filter = (i: any) => i.customId === 'help_select' && i.user.id === interaction.user.id;
-            // Message-scoped: concurrent /help calls never see each other's selects.
-            const collector = reply.createMessageComponentCollector({
-                filter,
-                time: 60000,
-            });
+        const collector = reply.createMessageComponentCollector<ComponentType.StringSelect>({
+            filter: (i) => i.customId === 'help_select' && i.user.id === interaction.user.id,
+            time: 60000,
+        });
 
-            collector?.on('collect', async (i: any) => {
-                try {
-                    const newEmbed = await (i.values[0] === 'info'
-                        ? buildInfoEmbed(interaction)
-                        : buildCommandsEmbed(interaction));
-                    await i.update({
-                        embeds: [newEmbed],
-                        components: [menuRow, buttonRow],
-                    }).catch(console.error);
-                } catch (error) {
-                    console.error('Error handling help select:', error);
-                    await i.reply({
-                        content: 'Something went wrong showing that section — try again.',
-                        flags: 64,
-                    }).catch(() => null);
-                }
-            });
-
-            collector?.on('end', () => {
-                const disabledMenu = (menuRow.components[0] as StringSelectMenuBuilder).setDisabled(true);
-                const updatedRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(disabledMenu);
-
-                interaction.editReply({
-                    components: [updatedRow, buttonRow],
+        collector.on('collect', async (i) => {
+            try {
+                const newEmbed = await (i.values[0] === 'info'
+                    ? buildInfoEmbed(interaction)
+                    : buildCommandsEmbed(interaction));
+                await i.update({
+                    embeds: [newEmbed],
+                    components: [menuRow, buttonRow],
                 }).catch(console.error);
-            });
-        } catch (error) {
-            console.error('Error in help command:', error);
-            await interaction.editReply({
-                content: 'An error occurred while processing the help command.',
-                components: [],
+            } catch (error) {
+                console.error('Error handling help select:', error);
+                await i.reply({
+                    content: 'Something went wrong showing that section — try again.',
+                    flags: 64,
+                }).catch(() => null);
+            }
+        });
+
+        collector.on('end', () => {
+            menuRow.components[0]?.setDisabled(true);
+            interaction.editReply({
+                components: [menuRow, buttonRow],
             }).catch(console.error);
-        }
+        });
     },
 } as Command;

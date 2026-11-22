@@ -18,7 +18,7 @@ import type { Command } from '../types/index.js';
 const INFO_DESCRIPTION = [
     '# Bring Your Own Key',
     '> Use your own Google Gemini API key with Alice instead of',
-    '> the shared queue. more uptime for everyone.',
+    '> the shared queue. More uptime for everyone.',
     '',
     '# How to get a key',
     '1. Go to https://aistudio.google.com/apikey',
@@ -29,8 +29,6 @@ const INFO_DESCRIPTION = [
     '> Your key is AES-256 encrypted before storage and is',
     '> ONLY used for your own requests. It is never shared.',
 ].join('\n');
-
-const createEmbed = baseEmbed;
 
 async function buildByokPayload(interaction: ChatInputCommandInteraction | ButtonInteraction, opts: { removed?: boolean } = {}) {
     const user = await Users.get(interaction.user.id);
@@ -47,7 +45,7 @@ async function buildByokPayload(interaction: ChatInputCommandInteraction | Butto
         new ButtonBuilder()
             .setCustomId(`${hasKey ? 'byok_remove' : 'byok_add'}:${interaction.user.id}`)
             .setLabel(hasKey ? '🗑️ Remove Your Key' : '🔑 Add Your Key')
-            .setStyle(hasKey ? ButtonStyle.Danger : ButtonStyle.Success)
+            .setStyle(hasKey ? ButtonStyle.Danger : ButtonStyle.Success),
     );
 
     return {
@@ -93,8 +91,8 @@ export async function handleByokButton(interaction: ButtonInteraction): Promise<
                         .setLabel('Google AI Studio API Key')
                         .setStyle(TextInputStyle.Short)
                         .setRequired(true)
-                        .setPlaceholder('AIza...')
-                )
+                        .setPlaceholder('AIza...'),
+                ),
             );
 
         await interaction.showModal(modal);
@@ -117,13 +115,12 @@ export async function handleByokButton(interaction: ButtonInteraction): Promise<
 
 export async function handleByokModal(interaction: ModalSubmitInteraction): Promise<void> {
     await interaction.deferReply({ flags: 64 });
-
     const key = interaction.fields.getTextInputValue('byok_key').trim();
 
     const user = await Users.ensure(interaction.user.id);
-    if (user?.byokKey) {
+    if (user.byokKey) {
         await interaction.editReply({
-            embeds: [createEmbed(interaction, '⚠️ Already Set', '```md\n# You already have a BYOK key saved.\n> Use /byok and hit Remove Key first if you want to change it.\n```', COLORS.warning)],
+            embeds: [baseEmbed(interaction, '⚠️ Already Set', '```md\n# You already have a BYOK key saved.\n> Use /byok and hit Remove Key first if you want to change it.\n```', COLORS.warning)],
         });
         return;
     }
@@ -131,7 +128,7 @@ export async function handleByokModal(interaction: ModalSubmitInteraction): Prom
     const result = await keycheck(key);
     if (!result.valid) {
         await interaction.editReply({
-            embeds: [createEmbed(interaction, '❌ Invalid Key', '```md\n# Could not verify your key.\n> ' + (result.error ?? 'Unknown error') + '\n```', COLORS.error)],
+            embeds: [baseEmbed(interaction, '❌ Invalid Key', '```md\n# Could not verify your key.\n> ' + (result.error ?? 'Unknown error') + '\n```', COLORS.error)],
         });
         return;
     }
@@ -139,6 +136,6 @@ export async function handleByokModal(interaction: ModalSubmitInteraction): Prom
     await Users.update(interaction.user.id, { tier: 'byok', byokKey: key }, user);
 
     await interaction.editReply({
-        embeds: [createEmbed(interaction, '✅ Key Saved', '```md\n# Your BYOK key is set and encrypted.\n> It will only be used for your requests. Enjoy!\n```', COLORS.success)],
+        embeds: [baseEmbed(interaction, '✅ Key Saved', '```md\n# Your BYOK key is set and encrypted.\n> It will only be used for your requests. Enjoy!\n```', COLORS.success)],
     });
 }

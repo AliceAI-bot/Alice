@@ -21,8 +21,6 @@ export async function checkMessageAccess(userId: string): Promise<GateCheck> {
                 reply: {
                     content: applyEmojis('hey, before we talk you gotta accept my tos — run any slash command and hit Agree and Continue first'),
                     emotion: 'neutral',
-                    degraded: true,
-                    toolsUsed: [],
                 },
             };
         }
@@ -58,7 +56,7 @@ async function ignoreColdOrSilent(userId: string, ttlMs: number): Promise<Proces
     } catch {
         return null;
     }
-    return { content: applyEmojis(ignoreColdLine()), emotion: 'annoyed', degraded: false, toolsUsed: [] };
+    return { content: applyEmojis(ignoreColdLine()), emotion: 'annoyed' };
 }
 
 /**

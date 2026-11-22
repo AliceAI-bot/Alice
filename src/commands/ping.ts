@@ -8,14 +8,14 @@ export default {
     global: true,
     cooldown: 5,
     execute: async (interaction: ChatInputCommandInteraction) => {
-      const start = Date.now();
+        const start = Date.now();
         await interaction.reply({
             content: '✨ *Alice stirs awake...*',
         });
 
         const latency = Date.now() - start;
         await interaction.editReply(
-          `(≧◡≦) Ping-pong~! \n Latency is **${latency}**ms ✨ \n API Latency is **${Math.round(interaction.client.ws.ping)}**ms. Zoom zoom~! 🚀`
+            `(≧◡≦) Ping-pong~! \n Latency is **${latency}**ms ✨ \n API Latency is **${Math.round(interaction.client.ws.ping)}**ms. Zoom zoom~! 🚀`,
         );
-    }
+    },
 } as Command;

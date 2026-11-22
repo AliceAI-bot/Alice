@@ -1,9 +1,9 @@
 import { RELATIONSHIP_CONFIG } from '../config/relationshipConfig.js';
-import { saveUserState, usageToday, VOTE_FRESH_MS, VOTE_NEGATIVE_FRESH_MS } from '../db/redisStore.js';
+import { saveUserState, usageToday } from '../db/redisStore.js';
 import type { UserState, UserVoteState } from '../db/redisStore.js';
 import type { UserData } from '../db/database.js';
 import type { RelationshipState } from '../utils/relationship.js';
-import { refreshVote } from '../utils/voterCheck.js';
+import { refreshVote, voteIsFresh } from '../utils/voterCheck.js';
 
 export interface UsageQuota {
     /**
@@ -38,9 +38,7 @@ export async function resolveUsageQuota(
     let vote = state.vote;
     let voted = false;
     let voteChanged = false;
-    const voteAge = vote ? now - vote.checkedAt : Infinity;
-    const voteTtl = vote?.voted ? VOTE_FRESH_MS : VOTE_NEGATIVE_FRESH_MS;
-    if (vote && voteAge < voteTtl) {
+    if (vote && voteIsFresh(vote, now)) {
         voted = vote.voted;
     } else {
         const fresh = await refreshVote(userId);
@@ -59,11 +57,10 @@ export async function resolveUsageQuota(
     const quota = base + (voted ? bonus : 0);
 
     if (usedToday >= quota) {
-        const voteSnapshot = vote;
         if (voteChanged) {
-            await saveUserState(userId, { ...state, vote: voteSnapshot }).catch(() => null);
+            await saveUserState(userId, { ...state, vote }).catch(() => null);
         }
-        return { usedToday, vote: voteSnapshot, blocked: { quota, bonus } };
+        return { usedToday, vote, blocked: { quota, bonus } };
     }
 
     return { usedToday, vote, blocked: null };
@@ -75,11 +72,11 @@ export async function persistDegradedUsage(
     rel: RelationshipState,
     state: UserState,
     vote: UserVoteState | null,
+    usedToday: number,
 ): Promise<void> {
-    const count = state.usage.day === usageToday() ? state.usage.count : 0;
     await saveUserState(userId, {
         rel,
-        usage: { day: usageToday(), count: count + 1 },
+        usage: { day: usageToday(), count: usedToday + 1 },
         vote,
         ignoredUntil: state.ignoredUntil,
     }).catch(() => null);

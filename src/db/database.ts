@@ -1,7 +1,8 @@
 import { DocumentExistsError, DocumentNotFoundError, PathNotFoundError, Collection, MutateInSpec } from 'couchbase';
 import CouchbaseClient from '../integrations/couchbase.js';
 import { encrypt, decrypt, hashKey } from '../integrations/crypto.js';
-import { RelationshipState, createRelationship } from '../utils/relationship.js';
+import { createRelationship } from '../utils/relationship.js';
+import type { RelationshipState } from '../utils/relationship.js';
 
 export type Tier = 'free' | 'premium' | 'byok';
 
@@ -25,7 +26,6 @@ export interface UserData {
 
 export interface ChannelConfig {
     persona: string;
-    channelId: string;
 }
 
 export interface GuildData {
@@ -39,18 +39,46 @@ export interface GateData {
     reason: string | null;
 }
 
-// In-process read-through cache for user documents. Every mutating method
-// invalidates/updates it, so same-process writes are always coherent; writes
-// from other processes become visible within USER_CACHE_TTL_MS.
-const USER_CACHE_TTL_MS = 3 * 60 * 1000;
-const USER_CACHE_MAX = 2000;
-
-interface UserCacheEntry {
-    data: UserData;
+interface CacheEntry<T> {
+    data: T;
     expiresAt: number;
 }
 
-const userCache = new Map<string, UserCacheEntry>();
+/** Bounded read-through cache with TTL + LRU eviction. */
+function createTtlCache<T>(ttlMs: number, max: number, clone: (data: T) => T) {
+    const store = new Map<string, CacheEntry<T>>();
+
+    return {
+        get(key: string): T | null {
+            const entry = store.get(key);
+            if (!entry) return null;
+            if (entry.expiresAt <= Date.now()) {
+                store.delete(key);
+                return null;
+            }
+            // Refresh LRU position.
+            store.delete(key);
+            store.set(key, entry);
+            return clone(entry.data);
+        },
+        set(key: string, data: T): void {
+            store.delete(key);
+            store.set(key, { data: clone(data), expiresAt: Date.now() + ttlMs });
+            if (store.size > max) {
+                const oldest = store.keys().next().value;
+                if (oldest !== undefined) store.delete(oldest);
+            }
+        },
+        patch(key: string, apply: (data: T) => void): void {
+            const entry = store.get(key);
+            if (!entry || entry.expiresAt <= Date.now()) return;
+            apply(entry.data);
+        },
+        delete(key: string): void {
+            store.delete(key);
+        },
+    };
+}
 
 function cloneUser(data: UserData): UserData {
     return {
@@ -62,80 +90,21 @@ function cloneUser(data: UserData): UserData {
     };
 }
 
-function userCacheGet(userId: string): UserData | null {
-    const entry = userCache.get(userId);
-    if (!entry) return null;
-
-    if (entry.expiresAt <= Date.now()) {
-        userCache.delete(userId);
-        return null;
-    }
-
-    // Refresh LRU position.
-    userCache.delete(userId);
-    userCache.set(userId, entry);
-    return cloneUser(entry.data);
-}
-
-function userCacheSet(userId: string, data: UserData): void {
-    userCache.delete(userId);
-    userCache.set(userId, { data: cloneUser(data), expiresAt: Date.now() + USER_CACHE_TTL_MS });
-
-    if (userCache.size > USER_CACHE_MAX) {
-        const oldest = userCache.keys().next().value;
-        if (oldest !== undefined) userCache.delete(oldest);
-    }
-}
-
-function userCachePatch(
-    userId: string,
-    patch: (data: UserData) => void,
-): void {
-    const entry = userCache.get(userId);
-    if (!entry || entry.expiresAt <= Date.now()) return;
-    patch(entry.data);
-}
-
-// Guild configs change rarely but are read every guild turn — brief cache.
-// Same caveat as userCache: cross-process writes become visible within TTL.
-const GUILD_CACHE_TTL_MS = 60 * 1000;
-const GUILD_CACHE_MAX = 5000;
-
-interface GuildCacheEntry {
-    data: GuildData;
-    expiresAt: number;
-}
-
-const guildCache = new Map<string, GuildCacheEntry>();
-
 function cloneGuild(data: GuildData): GuildData {
     return { ...data, channels: { ...data.channels } };
 }
 
-function guildCacheGet(guildId: string): GuildData | null {
-    const entry = guildCache.get(guildId);
-    if (!entry) return null;
+// In-process read-through caches. Every mutating method invalidates/updates
+// them, so same-process writes are always coherent; writes from other
+// processes become visible within the cache TTL.
+const USER_CACHE_TTL_MS = 3 * 60 * 1000;
+const USER_CACHE_MAX = 2000;
+const userCache = createTtlCache(USER_CACHE_TTL_MS, USER_CACHE_MAX, cloneUser);
 
-    if (entry.expiresAt <= Date.now()) {
-        guildCache.delete(guildId);
-        return null;
-    }
-
-    // Refresh LRU position.
-    guildCache.delete(guildId);
-    guildCache.set(guildId, entry);
-    return cloneGuild(entry.data);
-}
-
-function guildCacheSet(guildId: string, data: GuildData): void {
-    guildCache.delete(guildId);
-    guildCache.set(guildId, { data: cloneGuild(data), expiresAt: Date.now() + GUILD_CACHE_TTL_MS });
-
-    if (guildCache.size > GUILD_CACHE_MAX) {
-        const oldest = guildCache.keys().next().value;
-        if (oldest !== undefined) guildCache.delete(oldest);
-    }
-}
+// Guild configs change rarely but are read every guild turn — brief cache.
+const GUILD_CACHE_TTL_MS = 60 * 1000;
+const GUILD_CACHE_MAX = 5000;
+const guildCache = createTtlCache(GUILD_CACHE_TTL_MS, GUILD_CACHE_MAX, cloneGuild);
 
 class UsersModel {
     constructor(private collection: Collection) {}
@@ -149,19 +118,19 @@ class UsersModel {
     }
 
     async get(userId: string): Promise<UserData | null> {
-        const cached = userCacheGet(userId);
+        const cached = userCache.get(userId);
         if (cached) return cached;
 
         try {
             const doc = await this.collection.get(hashKey(userId));
-            const raw = doc.content as any;
+            const raw = doc.content as UserData;
 
             const data: UserData = {
                 ...raw,
                 byokKey: raw.byokKey ? decrypt(raw.byokKey) : null,
                 blacklistReason: raw.blacklistReason ? decrypt(raw.blacklistReason) : null,
             };
-            userCacheSet(userId, data);
+            userCache.set(userId, data);
             return cloneUser(data);
         } catch (err) {
             if (err instanceof DocumentNotFoundError) return null;
@@ -195,7 +164,7 @@ class UsersModel {
             if (!winner) throw err;
             return winner;
         }
-        userCacheSet(userId, fresh);
+        userCache.set(userId, fresh);
         return cloneUser(fresh);
     }
 
@@ -204,7 +173,7 @@ class UsersModel {
         if (!existing) throw new Error('User not found');
 
         await this.collection.upsert(hashKey(userId), this.serialize({ ...existing, ...patch }));
-        userCacheSet(userId, { ...existing, ...patch });
+        userCache.set(userId, { ...existing, ...patch });
     }
 
     async getGateData(userId: string): Promise<GateData> {
@@ -221,51 +190,18 @@ class UsersModel {
         await this.update(userId, { blacklisted: false, blacklistReason: null });
     }
 
-    async isBlacklisted(userId: string): Promise<boolean> {
-        const gate = await this.getGateData(userId);
-        return gate.blacklisted;
-    }
-
-    async saveInteraction(
+    /**
+     * Sub-document write: never clobbers fields changed elsewhere (premium/
+     * badges) while we held a possibly-stale copy of the doc.
+     */
+    async recordMessage(
         userId: string,
-        _base: UserData,
-        rel: RelationshipState,
-        memories?: string[],
+        base: UserData,
+        memories: string[] | undefined,
+        rel?: RelationshipState,
     ): Promise<void> {
-        // Sub-document write: never clobbers fields changed elsewhere
-        // (premium/badges) while we held a possibly-stale copy of the doc.
-        const specs: MutateInSpec[] = [
-            MutateInSpec.increment('stats.messagesSent', 1),
-            MutateInSpec.replace('relationship', rel),
-        ];
-        if (memories) specs.push(MutateInSpec.replace('memories', memories));
-
-        try {
-            await this.collection.mutateIn(hashKey(userId), specs);
-        } catch (err) {
-            if (!(err instanceof PathNotFoundError)) throw err;
-            // update() refreshes the cache with this exact patch — no extra patching.
-            await this.update(
-                userId,
-                {
-                    relationship: rel,
-                    ...(memories ? { memories } : {}),
-                    stats: { ..._base.stats, messagesSent: _base.stats.messagesSent + 1 },
-                },
-                _base,
-            );
-            return;
-        }
-
-        userCachePatch(userId, (data) => {
-            data.stats.messagesSent += 1;
-            data.relationship = { ...rel };
-            if (memories) data.memories = [...memories];
-        });
-    }
-
-    async bumpMessages(userId: string, base: UserData, memories?: string[]): Promise<void> {
         const specs: MutateInSpec[] = [MutateInSpec.increment('stats.messagesSent', 1)];
+        if (rel) specs.push(MutateInSpec.replace('relationship', rel));
         if (memories) specs.push(MutateInSpec.replace('memories', memories));
 
         try {
@@ -276,6 +212,7 @@ class UsersModel {
             await this.update(
                 userId,
                 {
+                    ...(rel ? { relationship: rel } : {}),
                     ...(memories ? { memories } : {}),
                     stats: { ...base.stats, messagesSent: base.stats.messagesSent + 1 },
                 },
@@ -284,8 +221,9 @@ class UsersModel {
             return;
         }
 
-        userCachePatch(userId, (data) => {
+        userCache.patch(userId, (data) => {
             data.stats.messagesSent += 1;
+            if (rel) data.relationship = { ...rel };
             if (memories) data.memories = [...memories];
         });
     }
@@ -307,13 +245,13 @@ class GuildsModel {
     constructor(private collection: Collection) {}
 
     async get(guildId: string): Promise<GuildData | null> {
-        const cached = guildCacheGet(guildId);
+        const cached = guildCache.get(guildId);
         if (cached) return cached;
 
         try {
             const doc = await this.collection.get(hashKey(guildId));
             const data = doc.content as GuildData;
-            guildCacheSet(guildId, data);
+            guildCache.set(guildId, data);
             return cloneGuild(data);
         } catch (err) {
             if (err instanceof DocumentNotFoundError) return null;
@@ -323,7 +261,7 @@ class GuildsModel {
 
     async set(guildId: string, data: GuildData): Promise<void> {
         await this.collection.upsert(hashKey(guildId), data);
-        guildCacheSet(guildId, data);
+        guildCache.set(guildId, data);
     }
 
     async remove(guildId: string): Promise<void> {
@@ -335,7 +273,7 @@ class GuildsModel {
         const guild = await this.get(guildId);
         const channels = guild?.channels ?? {};
         const hashed = hashKey(channelId);
-        channels[hashed] = { persona: encrypt(persona), channelId: encrypt(channelId) };
+        channels[hashed] = { persona: encrypt(persona) };
         await this.set(guildId, { channels, createdAt: guild?.createdAt ?? Date.now() });
     }
 

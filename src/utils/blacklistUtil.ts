@@ -9,7 +9,7 @@ import {
 import { Users } from '../db/database.js';
 import { getLogChannel } from '../config/config.js';
 
-export const APPEAL_URL = 'https://discord.gg/JypKEEqPfT';
+const APPEAL_URL = 'https://discord.gg/JypKEEqPfT';
 
 interface BlacklistResponse {
     embeds: EmbedBuilder[];
@@ -26,7 +26,7 @@ export function buildBlacklistResponse(reason: string, client?: Client): Blackli
             'Your access has been *suspended* due to:\n' +
             `> **${reason}**\n` +
             '```\n' +
-            'If you think this is a mistake, you can appeal below! 💌'
+            'If you think this is a mistake, you can appeal below! 💌',
         )
         .setFooter({
             text: 'Alice • Appeal if you believe this is an error',
@@ -37,7 +37,7 @@ export function buildBlacklistResponse(reason: string, client?: Client): Blackli
         new ButtonBuilder()
             .setLabel('✨ Appeal Suspension ✨')
             .setStyle(ButtonStyle.Link)
-            .setURL('https://discord.gg/tqrVhMaUt')
+            .setURL('https://discord.gg/tqrVhMaUt'),
     );
 
     return {
@@ -91,7 +91,7 @@ export async function blacklistUser(req: BlacklistRequest): Promise<BlacklistOut
                                 `# User Information\n> ID: ${req.userId}\n> Tag: ${tag}\n\n` +
                                 `# Reason\n> ${req.reason}\n\n` +
                                 `# Moderator\n> ${req.moderatorTag} (${req.moderatorId})\n` +
-                                '```'
+                                '```',
                             )
                             .setColor(0xff6f91)
                             .setTimestamp()
@@ -113,14 +113,14 @@ export async function blacklistUser(req: BlacklistRequest): Promise<BlacklistOut
                     .setDescription(
                         '```md\n' +
                         `# Oh no! You've been blacklisted from Alice.\n> Reason: ${req.reason}\n---\nWant to appeal? Click the button below or join the support server.\n` +
-                        '```'
+                        '```',
                     )
                     .setColor(0xffb6c1)
                     .setThumbnail(req.client.user?.displayAvatarURL() || null),
             ],
             components: [
                 new ActionRowBuilder<ButtonBuilder>().addComponents(
-                    new ButtonBuilder().setLabel('✨ Appeal / Support ✨').setStyle(ButtonStyle.Link).setURL(APPEAL_URL)
+                    new ButtonBuilder().setLabel('✨ Appeal / Support ✨').setStyle(ButtonStyle.Link).setURL(APPEAL_URL),
                 ),
             ],
         });

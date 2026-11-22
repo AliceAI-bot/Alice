@@ -11,7 +11,7 @@ function extractMentionId(target: unknown): string | null {
     return null;
 }
 
-/** Shared mention/ID resolution for dm/ignore/react tools. Falls back to the requester. */
+/** Shared mention/ID resolution for dm/ignore/profile tools. Falls back to the requester. */
 export function resolveToolTargetId(
     ctx: ToolContext,
     args: Record<string, unknown>,

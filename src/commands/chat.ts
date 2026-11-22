@@ -11,8 +11,6 @@ import { isVoter } from '../utils/voterCheck.js';
 import { baseEmbed, EMBED_COLORS as COLORS } from '../utils/embeds.js';
 import type { Command } from '../types/index.js';
 
-const createEmbed = baseEmbed;
-
 function checkAdminPerms(interaction: ChatInputCommandInteraction): boolean {
     return interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageChannels) ?? false;
 }
@@ -23,14 +21,14 @@ async function resolvePersona(interaction: ChatInputCommandInteraction): Promise
     const personas = await getAvailablePersonas();
     if (!personas.length) {
         await interaction.editReply({
-            embeds: [createEmbed(interaction, '❌ No Personas Installed', '```md\n# No persona files found\n> Expected: src/ai/instructions/Persona/*.txt\n```', COLORS.error)],
+            embeds: [baseEmbed(interaction, '❌ No Personas Installed', '```md\n# No persona files found\n> Expected: src/ai/instructions/Persona/*.txt\n```', COLORS.error)],
         });
         return null;
     }
     if (!persona || !personas.includes(persona)) {
-        const available = personas.map((p) => '`' + p + '`').join(', ');
+        const available = personas.map((p) => `\`${p}\``).join(', ');
         await interaction.editReply({
-            embeds: [createEmbed(interaction, '❌ Invalid Persona', '```md\n# `' + (persona || '(none)') + '` is not a valid persona\n\nAvailable: ' + available + '\n```', COLORS.error)],
+            embeds: [baseEmbed(interaction, '❌ Invalid Persona', `\`\`\`md\n# \`${persona || '(none)'}\` is not a valid persona\n\nAvailable: ${available}\n\`\`\``, COLORS.error)],
         });
         return null;
     }
@@ -80,7 +78,7 @@ export default {
 
         if (!checkAdminPerms(interaction)) {
             await interaction.reply({
-                embeds: [createEmbed(interaction, '❌ Permission Denied', '```md\n# Requires ManageChannels permission\n```', COLORS.error)],
+                embeds: [baseEmbed(interaction, '❌ Permission Denied', '```md\n# Requires ManageChannels permission\n```', COLORS.error)],
                 flags: 64,
             });
             return;
@@ -88,7 +86,7 @@ export default {
 
         if (!interaction.guildId) {
             await interaction.reply({
-                embeds: [createEmbed(interaction, '❌ Server Only', '```md\n# This command only works in a server\n```', COLORS.error)],
+                embeds: [baseEmbed(interaction, '❌ Server Only', '```md\n# This command only works in a server\n```', COLORS.error)],
                 flags: 64,
             });
             return;
@@ -112,9 +110,10 @@ export default {
                     await handleUpdate(interaction, guildId, channel.id);
                     break;
             }
-        } catch (err: any) {
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
             await interaction.editReply({
-                embeds: [createEmbed(interaction, '❌ Error', `\`\`\`md\n# An error occurred\n> ${err.message}\n\`\`\``, COLORS.error)],
+                embeds: [baseEmbed(interaction, '❌ Error', `\`\`\`md\n# An error occurred\n> ${message}\n\`\`\``, COLORS.error)],
             });
         }
     },
@@ -122,12 +121,7 @@ export default {
     autocomplete: async (interaction: AutocompleteInteraction): Promise<void> => {
         const focused = interaction.options.getFocused(true);
         if (focused.name === 'personality') {
-            let personas: string[] = [];
-            try {
-                personas = await getAvailablePersonas();
-            } catch {
-                personas = [];
-            }
+            const personas = await getAvailablePersonas();
             const filtered = personas
                 .filter(p => p.toLowerCase().includes(focused.value.toLowerCase()))
                 .slice(0, 25)
@@ -144,14 +138,14 @@ async function handleEnable(interaction: ChatInputCommandInteraction, guildId: s
     const existing = await Guilds.getChannel(guildId, channelId);
     if (existing) {
         await interaction.editReply({
-            embeds: [createEmbed(interaction, '⚠️ Already Enabled', `\`\`\`md\n# Channel already configured\n> Current persona: **${existing}**\n> Use \`/chat update\` to change\n\`\`\``, COLORS.warning)],
+            embeds: [baseEmbed(interaction, '⚠️ Already Enabled', `\`\`\`md\n# Channel already configured\n> Current persona: **${existing}**\n> Use \`/chat update\` to change\n\`\`\``, COLORS.warning)],
         });
         return;
     }
 
     await Guilds.setChannel(guildId, channelId, persona);
 
-    const embed = createEmbed(interaction, '✅ Chat Enabled', `\`\`\`md\n# Channel Configuration\n> Channel: <#${channelId}>\n> Persona: **${persona}**\n\`\`\``, COLORS.success);
+    const embed = baseEmbed(interaction, '✅ Chat Enabled', `\`\`\`md\n# Channel Configuration\n> Channel: <#${channelId}>\n> Persona: **${persona}**\n\`\`\``, COLORS.success);
 
     await interaction.editReply({ embeds: [embed] });
 }
@@ -163,22 +157,21 @@ async function handleUpdate(interaction: ChatInputCommandInteraction, guildId: s
     const existing = await Guilds.getChannel(guildId, channelId);
     if (!existing) {
         await interaction.editReply({
-            embeds: [createEmbed(interaction, '❌ Channel Not Configured', `\`\`\`md\n# <#${channelId}> is not configured\n> Use \`/chat enable\` to set up first\n\`\`\``, COLORS.error)],
+            embeds: [baseEmbed(interaction, '❌ Channel Not Configured', `\`\`\`md\n# <#${channelId}> is not configured\n> Use \`/chat enable\` to set up first\n\`\`\``, COLORS.error)],
         });
         return;
     }
 
-    const previousPersona = existing;
-    if (previousPersona === persona) {
+    if (existing === persona) {
         await interaction.editReply({
-            embeds: [createEmbed(interaction, '⚠️ Same Persona', `\`\`\`md\n# Channel already uses \`${persona}\`\n> No changes made\n\`\`\``, COLORS.warning)],
+            embeds: [baseEmbed(interaction, '⚠️ Same Persona', `\`\`\`md\n# Channel already uses \`${persona}\`\n> No changes made\n\`\`\``, COLORS.warning)],
         });
         return;
     }
 
     await Guilds.setChannel(guildId, channelId, persona);
 
-    const embed = createEmbed(interaction, '✅ Personality Updated', `\`\`\`md\n# Channel: <#${channelId}>\n> Previous: **${previousPersona}**\n> Current: **${persona}**\n\`\`\``, COLORS.success);
+    const embed = baseEmbed(interaction, '✅ Personality Updated', `\`\`\`md\n# Channel: <#${channelId}>\n> Previous: **${existing}**\n> Current: **${persona}**\n\`\`\``, COLORS.success);
 
     await interaction.editReply({ embeds: [embed] });
 }
@@ -187,14 +180,14 @@ async function handleDisable(interaction: ChatInputCommandInteraction, guildId: 
     const existing = await Guilds.getChannel(guildId, channelId);
     if (!existing) {
         await interaction.editReply({
-            embeds: [createEmbed(interaction, '❌ Channel Not Configured', `\`\`\`md\n# <#${channelId}> is not configured\n\`\`\``, COLORS.error)],
+            embeds: [baseEmbed(interaction, '❌ Channel Not Configured', `\`\`\`md\n# <#${channelId}> is not configured\n\`\`\``, COLORS.error)],
         });
         return;
     }
 
     await Guilds.removeChannel(guildId, channelId);
 
-    const embed = createEmbed(interaction, '🚫 Chat Disabled', `\`\`\`md\n# Channel Removed\n> <#${channelId}> (was: **${existing}**)\n\`\`\``, COLORS.error);
+    const embed = baseEmbed(interaction, '🚫 Chat Disabled', `\`\`\`md\n# Channel Removed\n> <#${channelId}> (was: **${existing}**)\n\`\`\``, COLORS.error);
 
     await interaction.editReply({ embeds: [embed] });
 }

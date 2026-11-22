@@ -21,7 +21,7 @@ function stripUnicodeEmojis(text: string): string {
 
 function getCache(): EmojiCache {
     if (!cache) {
-        const entries = getEmojis() ?? [];
+        const entries = getEmojis();
         const map = new Map(entries.map((entry) => [entry.name.toLowerCase(), entry.emoji]));
         const source = entries
             .map((entry) => entry.name.replace(RE_SPECIAL, '\\$&'))

@@ -7,7 +7,7 @@ export const IGNORE_TOOL = 'ignore_user';
 
 export async function executeIgnore(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
     const action = args.action === 'unignore' ? 'unignore' : args.action === 'ignore' ? 'ignore' : null;
-    if (!action) return "Alice needs an action: ignore or unignore.";
+    if (!action) return 'Alice needs an action: ignore or unignore.';
 
     const targetId = resolveToolTargetId(ctx, args);
 

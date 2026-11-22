@@ -14,30 +14,26 @@ interface Config {
     emojis: { name: string; emoji: string }[];
 }
 
-let config: Config;
+let config: Config | null = null;
 
-function loadConfig(): Config {
-    if (config) return config;
-
-    const configPath = path.join(process.cwd(), 'config.json');
-    config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+export function getConfig(): Config {
+    if (!config) {
+        const configPath = path.join(process.cwd(), 'config.json');
+        config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Config;
+    }
     return config;
 }
 
-export function getConfig(): Config {
-    return loadConfig();
+function idListed(ids: string[], userId: string | number): boolean {
+    return ids.includes(String(userId));
 }
 
 export function isOwner(userId: string | number): boolean {
-    const cfg = getConfig();
-    const idStr = String(userId);
-    return cfg.devs.includes(idStr);
+    return idListed(getConfig().devs, userId);
 }
 
 export function isModerator(userId: string | number): boolean {
-    const cfg = getConfig();
-    const idStr = String(userId);
-    return cfg.moderators.includes(idStr);
+    return idListed(getConfig().moderators, userId);
 }
 
 export type LogChannelType = 'blacklist' | 'flagged_Content' | 'premium';

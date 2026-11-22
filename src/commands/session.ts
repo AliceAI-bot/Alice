@@ -2,7 +2,7 @@ import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
 import type { Command } from '../types/index.js';
 import { isVoter } from '../utils/voterCheck.js';
 import { getSession, resetSession, sessionKey } from '../db/redisStore.js';
-import { baseEmbed } from '../utils/embeds.js';
+import { baseEmbed, EMBED_COLORS as COLORS } from '../utils/embeds.js';
 
 export default {
     data: new SlashCommandBuilder()
@@ -24,14 +24,14 @@ export default {
             participant = session.length === 0 || session.some((m) => m.authorId === interaction.user.id);
         } catch {
             await interaction.reply({
-                embeds: [baseEmbed(interaction, '❌ Error', '```md\n# Could not check the session\n> Try again in a moment\n```', 0xff4444)],
+                embeds: [baseEmbed(interaction, '❌ Error', '```md\n# Could not check the session\n> Try again in a moment\n```', COLORS.error)],
                 flags: 64,
             }).catch(() => null);
             return;
         }
         if (!participant) {
             await interaction.reply({
-                embeds: [baseEmbed(interaction, '🚫 Not Your Session', '```md\n# Only session participants can reset it\n> Join the conversation first\n```', 0xff4444)],
+                embeds: [baseEmbed(interaction, '🚫 Not Your Session', '```md\n# Only session participants can reset it\n> Join the conversation first\n```', COLORS.error)],
                 flags: 64,
             }).catch(() => null);
             return;

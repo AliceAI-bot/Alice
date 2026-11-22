@@ -1,4 +1,5 @@
-import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageComponentInteraction } from 'discord.js';
+import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import type { MessageComponentInteraction } from 'discord.js';
 import { Users } from '../db/database.js';
 
 export function createTosEmbed(): { embeds: EmbedBuilder[]; components: ActionRowBuilder<ButtonBuilder>[] } {
@@ -9,7 +10,7 @@ export function createTosEmbed(): { embeds: EmbedBuilder[]; components: ActionRo
             'Before using Alice, please review and accept our policies:\n\n' +
             '• [Terms of Service](https://github.com/AliceAI-bot/Terms/blob/main/Terms.md)\n' +
             '• [Privacy Policy](https://github.com/AliceAI-bot/Terms/blob/main/Privacy.md)\n\n' +
-            'By clicking **Agree and Continue**, you acknowledge and accept the terms above.'
+            'By clicking **Agree and Continue**, you acknowledge and accept the terms above.',
         );
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -22,7 +23,7 @@ export function createTosEmbed(): { embeds: EmbedBuilder[]; components: ActionRo
             .setCustomId('cancel_tos')
             .setLabel('Cancel')
             .setStyle(ButtonStyle.Danger)
-            .setEmoji('❌')
+            .setEmoji('❌'),
     );
 
     return { embeds: [embed], components: [row] };

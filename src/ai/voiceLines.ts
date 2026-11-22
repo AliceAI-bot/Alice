@@ -11,7 +11,7 @@ const COOLDOWN_LINES = [
 const BLOCKED_LINES = [
     'i… cant really respond to that one',
     'nah, im not touching that one, sorry',
-    "that ones a no from me, sorry",
+    'that ones a no from me, sorry',
 ];
 
 function pick(lines: readonly string[]): string {

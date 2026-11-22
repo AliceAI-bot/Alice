@@ -1,4 +1,4 @@
-import { ClusterClient, messageType } from 'discord-hybrid-sharding';
+import { ClusterClient, IPCMessage, messageType } from 'discord-hybrid-sharding';
 import { createClient, loginClient, CustomClient } from './client.js';
 import { loadEnv } from '../config/env.js';
 import { ready } from './loader.js';
@@ -21,27 +21,38 @@ function withBootTimeout<T>(what: string, task: Promise<T>): Promise<T> {
             BOOT_TIMEOUT_MS,
         );
         timer.unref();
-        task.then(resolve, reject);
+        task.then(
+            (value) => {
+                clearTimeout(timer);
+                resolve(value);
+            },
+            (error) => {
+                clearTimeout(timer);
+                reject(error);
+            },
+        );
     });
 }
 
-export async function runner() {
+async function runner(): Promise<void> {
     const startedAt = Date.now();
     const dbReady = initDB();
     dbReady.catch(() => {});
 
     try {
-        clientInstance = await createClient();
-        clientInstance.cluster = new ClusterClient(clientInstance);
+        const client = await createClient();
+        clientInstance = client;
+        const cluster = new ClusterClient(client);
+        client.cluster = cluster;
 
-        clientInstance.once('clientReady', async (readyClient) => {
-            console.log(`Shard ${clientInstance!.cluster!.info.SHARD_LIST.join(',')} ready as ${readyClient.user.tag}`);
+        client.once('clientReady', async (readyClient) => {
+            console.log(`Shard ${cluster.info.SHARD_LIST.join(',')} ready as ${readyClient.user.tag}`);
             console.log(`[boot] gateway ready in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
-            clientInstance!.cluster!.triggerReady();
+            cluster.triggerReady();
             try {
                 await withBootTimeout('Couchbase', dbReady);
                 console.log(`[boot] couchbase ready in ${Date.now() - startedAt}ms`);
-                await ready(clientInstance!);
+                await ready(client);
                 console.log(`[boot] Alice fully operational in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
             } catch (error) {
                 console.error(
@@ -52,29 +63,29 @@ export async function runner() {
             }
         });
 
-        await loginClient(clientInstance, token!);
+        await loginClient(client, token);
 
-        clientInstance.cluster.on('message', async (msg: any) => {
-            if (msg._type === messageType.CUSTOM_REQUEST && msg.alive) {
+        cluster.on('message', async (msg) => {
+            if (msg instanceof IPCMessage && msg._type === messageType.CUSTOM_REQUEST && msg.alive) {
                 await msg.reply({
-                    content: `Shard ${clientInstance!.cluster!.info.SHARD_LIST.join(',')} operational`
+                    content: `Shard ${cluster.info.SHARD_LIST.join(',')} operational`,
                 }).catch(console.error);
             }
         });
 
-        clientInstance.on('error', console.error);
-        clientInstance.on('warn', console.warn);
+        client.on('error', console.error);
+        client.on('warn', console.warn);
     } catch (error) {
         console.error('Cluster client startup failed:', error);
         process.exit(1);
     }
 }
 
-function shutdown() {
+function shutdown(): void {
     console.log('Shutting down cluster client...');
     clientInstance?.destroy()
         .then(() => process.exit(0))
-        .catch(err => {
+        .catch((err) => {
             console.error('Shutdown error:', err);
             process.exit(1);
         });

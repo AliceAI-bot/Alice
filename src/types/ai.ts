@@ -9,13 +9,11 @@ export interface AiMessage {
 
 export class AiError extends Error {
     status: number;
-    body: unknown;
 
-    constructor(message: string, status = 0, body: unknown = null) {
+    constructor(message: string, status = 0) {
         super(message);
         this.name = 'AiError';
         this.status = status;
-        this.body = body;
     }
 }
 
@@ -68,12 +66,8 @@ export interface ToolRequest {
 }
 
 export function toolRequestArgs(req: ToolRequest): Record<string, unknown> {
-    const args: Record<string, unknown> = {};
-    if (req.query !== undefined) args.query = req.query;
-    if (req.target !== undefined) args.target = req.target;
-    if (req.message !== undefined) args.message = req.message;
-    if (req.action !== undefined) args.action = req.action;
-    if (req.emoji !== undefined) args.emoji = req.emoji;
+    const args: Record<string, unknown> = { ...req };
+    delete args.name;
     return args;
 }
 
@@ -129,21 +123,15 @@ const EMOTION_SET: ReadonlySet<string> = new Set(EMOTIONS);
 const TOOL_NAME_SET: ReadonlySet<string> = new Set(TOOL_NAMES);
 
 /** Tolerate prose/fences around the JSON object (Lite models drift at high temp). */
-function extractJsonCandidate(rawText: unknown): string | null {
-    if (typeof rawText !== 'string') return null;
+function extractJsonCandidate(rawText: string): string | null {
     let text = rawText.trim();
     if (!text) return null;
     const fence = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
     if (fence?.[1]) text = fence[1].trim();
     if (!text) return null;
-    if (text.startsWith('{')) {
-        const end = text.lastIndexOf('}');
-        if (end !== -1) return text.slice(0, end + 1);
-        return text;
-    }
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
-    if (start !== -1 && end !== -1 && end > start) return text.slice(start, end + 1);
+    if (start !== -1 && end > start) return text.slice(start, end + 1);
     return text;
 }
 

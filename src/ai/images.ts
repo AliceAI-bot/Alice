@@ -26,12 +26,11 @@ export async function collectImages(message: Message): Promise<{ images: ChatIma
         if (eligible.length >= MAX_IMAGES) break;
 
         const type = attachment.contentType ?? '';
-        const name = typeof attachment.name === 'string' ? attachment.name : '';
         const looksImage =
-            type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(name);
+            type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(attachment.name);
         if (!looksImage || attachment.size > MAX_IMAGE_BYTES) continue;
 
-        const mimeType = type.startsWith('image/') ? type : mimeFromFileName(name);
+        const mimeType = type.startsWith('image/') ? type : mimeFromFileName(attachment.name);
         if (!mimeType) continue;
         eligible.push({ mimeType, url: attachment.url });
     }

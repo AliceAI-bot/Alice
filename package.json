@@ -8,8 +8,7 @@
     "dev": "tsc --noEmit --watch",
     "build": "swc src -d dist",
     "start": "node dist/src/index.js",
-    "check": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "check": "tsc --noEmit"
   },
   "keywords": [],
   "author": "MaliciousByte",

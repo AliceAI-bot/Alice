@@ -4,6 +4,7 @@ import type { SessionMessage, SessionSummary } from '../db/redisStore.js';
 import { buildMoodLine, buildRelationshipContext, formatTimeGap, formatTokyoNow } from '../utils/relationship.js';
 import type { RelationshipStatus } from '../utils/relationship.js';
 
+const LONG_GAP_MS = 3 * 24 * 60 * 60 * 1000;
 const PRESET_PATH = 'src/ai/instructions/preset.txt';
 const PERSONA_DIR = 'src/ai/instructions/Persona';
 const TOOLS_PATH = 'src/ai/instructions/tools.txt';
@@ -52,15 +53,9 @@ export function buildStaticSystemPrompt(personaName: string): string {
 
 /** Strip a leading bot mention so history stays clean (`<@id> hi` -> `hi`). */
 export function stripBotMention(raw: string, botId?: string | null): string {
-    let text = (raw ?? '').trim();
-    if (!text) return text;
-    if (botId) {
-        const mentionRe = new RegExp(`^\\s*<@!?${botId}>\\s*`);
-        text = text.replace(mentionRe, '').trim();
-    }
-    // Fallback: strip any leading mention-like token if bot id unknown.
-    if (!botId) text = text.replace(/^\s*<@!?\d+>\s*/, '').trim();
-    return text;
+    // Fall back to any mention-like token when the bot id is unknown.
+    const mention = botId ? `<@!?${botId}>` : '<@!?\\d+>';
+    return raw.replace(new RegExp(`^\\s*${mention}\\s*`), '').trim();
 }
 
 interface ContextOptions {
@@ -80,10 +75,11 @@ interface ContextOptions {
 export function buildContextSystemPrompt(opts: ContextOptions): string {
     const relationshipLine = buildRelationshipContext(opts.status).replace('{user}', opts.userName);
     const nowLine = `${formatTokyoNow(new Date(opts.now))}.`;
+    const gapMs = opts.lastInteractionAt == null ? null : opts.now - opts.lastInteractionAt;
     const gapLine =
-        opts.lastInteractionAt == null
+        gapMs === null
             ? `First meeting ${opts.userName}.`
-            : `Last: ${formatTimeGap(opts.now - opts.lastInteractionAt)}.${opts.now - opts.lastInteractionAt > 3 * 24 * 60 * 60 * 1000 ? ' Long time.' : ''}`;
+            : `Last: ${formatTimeGap(gapMs)}.${gapMs > LONG_GAP_MS ? ' Long time.' : ''}`;
     const moodLine = buildMoodLine(opts.lastEmotion, opts.lastInteractionAt, opts.now);
     const changedLine = opts.statusJustChanged ? 'Bond just shifted — show it, never announce it.' : '';
     const memoryBlock = opts.memories.length

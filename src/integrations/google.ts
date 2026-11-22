@@ -7,20 +7,13 @@ import {
     ThinkingLevel,
 } from '@google/genai';
 import type { Content, GenerateContentConfig, GenerateContentResponse } from '@google/genai';
-import { AiError, AiMessage } from '../types/ai.js';
+import { AiError } from '../types/ai.js';
+import type { AiMessage } from '../types/ai.js';
 
 // ----------------------------------------------------------- model constants
 
 const MODEL = 'gemini-3.5-flash-lite';
-
-// Casual chat wants a hot temp; structured JSON needs a cool one plus headroom
-// for reasoning + JSON. (HIGH thinking + a small budget starves the JSON and
-// yields empty/truncated text that fails JSON.parse every time.)
-const CASUAL = { temperature: 1.3, maxTokens: 600 } as const;
-const STRUCTURED = { temperature: 0.8, maxTokens: 1500 } as const;
-
-// Only the highest-severity content is blocked. Explicit 18+ is intentionally
-// unfiltered (18+ bot per ToS); harassment is pinned so API defaults can't drift.
+const DEFAULT = { temperature: 1.3, maxTokens: 1500 } as const;
 const SAFETY_SETTINGS = [
     { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
     { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
@@ -28,13 +21,12 @@ const SAFETY_SETTINGS = [
     { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
 ];
 
-/** Raised when Gemini blocked the prompt/response on a safety category. Not retried. */
 export class SafetyBlockedError extends AiError {
     /** HARM_CATEGORY_* values the model actually blocked, when reported. */
     readonly categories: string[];
 
-    constructor(message: string, categories: string[] = [], body: unknown = null) {
-        super(message, 400, body);
+    constructor(message: string, categories: string[] = []) {
+        super(message, 400);
         this.name = 'SafetyBlockedError';
         this.categories = categories;
     }
@@ -82,7 +74,6 @@ function sharedPool(): Slot[] {
 function takeSharedSlot(): Slot {
     const pool = sharedPool();
     if (!pool.length) throw new AiError('All configured Gemini API keys were rejected.');
-
     const now = Date.now();
     for (let i = 0; i < pool.length; i++) {
         const slot = pool[cursor++ % pool.length]!;
@@ -93,16 +84,9 @@ function takeSharedSlot(): Slot {
 
 /** Bad keys never come back. */
 function dropShared(slot: Slot): void {
-    const index = shared?.indexOf(slot) ?? -1;
-    if (index !== -1) shared!.splice(index, 1);
-}
-
-function markCooling(slot: Slot): void {
-    slot.coolUntil = Date.now() + KEY_COOLDOWN_MS;
-}
-
-function markHealthy(slot: Slot): void {
-    slot.coolUntil = 0;
+    if (!shared) return;
+    const index = shared.indexOf(slot);
+    if (index !== -1) shared.splice(index, 1);
 }
 
 const BYOK_CACHE_MAX = 50;
@@ -143,7 +127,7 @@ function wrapError(err: unknown): AiError {
         typeof e?.status === 'number' ? e.status : typeof e?.code === 'number' ? e.code : 0;
     const message =
         typeof e?.message === 'string' && e.message ? e.message : 'AI request failed.';
-    return new AiError(message, status, err);
+    return new AiError(message, status);
 }
 
 function isRetryable(err: AiError): boolean {
@@ -180,7 +164,7 @@ async function resilientCall<T>(
 
         try {
             const result = await doCall(slot.client);
-            markHealthy(slot);
+            slot.coolUntil = 0;
             return result;
         } catch (err) {
             lastError = wrapError(err);
@@ -189,7 +173,7 @@ async function resilientCall<T>(
                 if (!apiKey) dropShared(slot);
                 continue;
             }
-            if (lastError.status === 429) markCooling(slot);
+            if (lastError.status === 429) slot.coolUntil = Date.now() + KEY_COOLDOWN_MS;
             if (!isRetryable(lastError)) break;
 
             await sleep(Math.min(RETRY_BASE_MS * 2 ** attempt, RETRY_MAX_MS));
@@ -219,16 +203,7 @@ export interface ChatOptions {
 export interface ChatResult {
     text: string;
     model: string;
-    thinking: ThinkingLevel;
-    finishReason?: string | null | undefined;
-    usage?:
-        | {
-              promptTokens?: number | undefined;
-              candidatesTokens?: number | undefined;
-              thoughtsTokens?: number | undefined;
-              totalTokens?: number | undefined;
-          }
-        | undefined;
+    finishReason: string | null;
 }
 
 function toContents(messages: AiMessage[], images?: ChatImage[]): Content[] {
@@ -276,26 +251,14 @@ function toChatResult(
         (feedback?.blockReason != null && feedback.blockReason !== '') ||
         (!text && finishReason != null && BLOCK_FINISH_REASONS.has(finishReason));
     if (!text && safetyTriggered) {
-        throw new SafetyBlockedError(`Safety filter blocked the response (finishReason=${finishReason ?? 'unknown'}).`, categories, {
-            finishReason,
+        throw new SafetyBlockedError(
+            `Safety filter blocked the response (finishReason=${finishReason ?? 'unknown'}).`,
             categories,
-            promptFeedback: feedback ?? null,
-        });
+        );
     }
 
-    const usageRaw = (response as unknown as { usageMetadata?: Record<string, unknown> }).usageMetadata;
-    const num = (v: unknown): number | undefined =>
-        typeof v === 'number' && Number.isFinite(v) ? v : undefined;
-    const usage = usageRaw
-        ? {
-              promptTokens: num(usageRaw.promptTokenCount),
-              candidatesTokens: num(usageRaw.candidatesTokenCount),
-              thoughtsTokens: num(usageRaw.thoughtsTokenCount),
-              totalTokens: num(usageRaw.totalTokenCount),
-          }
-        : undefined;
-
     if (!text) {
+        const usage = (response as unknown as { usageMetadata?: Record<string, unknown> }).usageMetadata;
         console.warn('[ai] empty model text', {
             model: MODEL,
             finishReason,
@@ -304,16 +267,15 @@ function toChatResult(
             structured,
         });
     }
-    return { text, model: response.modelVersion ?? MODEL, thinking, finishReason, usage };
+    return { text, model: response.modelVersion ?? MODEL, finishReason };
 }
 
 export async function chat(options: ChatOptions): Promise<ChatResult> {
     const isStructured = Boolean(options.schema);
     const thinking = options.thinking ?? (isStructured ? ThinkingLevel.LOW : ThinkingLevel.HIGH);
-    const params = isStructured ? STRUCTURED : CASUAL;
     const config: GenerateContentConfig = {
-        temperature: options.temperature ?? params.temperature,
-        maxOutputTokens: options.maxTokens ?? params.maxTokens,
+        temperature: options.temperature ?? DEFAULT.temperature,
+        maxOutputTokens: options.maxTokens ?? DEFAULT.maxTokens,
         thinkingConfig: { thinkingLevel: thinking },
         safetySettings: SAFETY_SETTINGS,
     };
@@ -380,10 +342,8 @@ export async function keycheck(apiKey: string): Promise<KeyCheckResult> {
     try {
         const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
         const pager = await ai.models.list();
-        for await (const model of pager) {
-            void model;
-            break;
-        }
+        // Touch the first page so auth/network errors surface here.
+        await pager[Symbol.asyncIterator]().next();
         return { valid: true };
     } catch (err) {
         const wrapped = wrapError(err);
